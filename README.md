@@ -30,16 +30,16 @@ If you want the news agent to use Tavily, also set `TAVILY_API_KEY` in `.env`.
 - **Unified Pydantic State**: The entire LangGraph workflow is orchestrated using a single, serializable Pydantic model (`AgentState`), ensuring type safety and consistency across all nodes.
 - **English-Spanish Schema**: The core logic and variable names follow strict English project conventions, while the user-facing output is dynamically rendered in Spanish or English based on user preference.
 - **Composite News Agent**: The news agent is now a concurrent composite agent. It executes multiple parallel Spanish queries to Tavily, covering specific dimensions:
-    - **Mobility/Transport**: Public transport, traffic, and access.
-    - **Security**: Local safety and crime reports.
-    - **Commercialization**: Proximity to shops and commercial zones.
-    - **Nightlife**: Bars, restaurants, and social activity.
-    - **Environmental Risks**: Flooding and climate-related risks.
+    - **Movilidad/Transporte**: Transporte público, tráfico y acceso.
+    - **Seguridad**: Reportes de seguridad local.
+    - **Comercialización**: Proximidad a zonas comerciales.
+    - **Vida Nocturna**: Bares, restaurantes y actividad social.
+    - **Riesgos Ambientales**: Inundaciones y riesgos climáticos.
 - **Structured Parsing & Evaluation**: Uses OpenAI structured outputs to map user instructions into a detailed `Requirement` list and evaluate `Property` candidates against a quality threshold.
 - **Automated Graph Visualization**: Includes logic to generate Mermaid diagrams of the system's internal orchestration and the news agent's concurrent logic.
 
 ## Next
 
-- Implement **NewsAPI** and **GDELT** adapters into the composite news agent for deeper journalistic and macro-trend coverage.
 - Refactor the `PlaywrightListingClient` to fully support the new Pydantic requirement/property schemas.
-- Improve persistence for runs, traces, and generated reports.
+- Integrate **NewsAPI** or **GDELT** into the composite news agent for deeper coverage.
+- Add persistence for runs, traces, and generated reports.

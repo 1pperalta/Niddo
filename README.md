@@ -41,5 +41,4 @@ If you want the news agent to use Tavily, also set `TAVILY_API_KEY` in `.env`.
 ## Next
 
 - Refactor the `PlaywrightListingClient` to fully support the new Pydantic requirement/property schemas.
-- Integrate **NewsAPI** or **GDELT** into the composite news agent for deeper coverage.
 - Add persistence for runs, traces, and generated reports.

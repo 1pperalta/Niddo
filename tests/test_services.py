@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-from estatia.models import Listing, ListingLocation, ListingProperty, Location, PropertyType, UserRequest
-from estatia.services import TavilyNewsService, normalize_text
+from niddo.models import Listing, ListingLocation, ListingProperty, Location, PropertyType, UserRequest
+from niddo.services import TavilyNewsService, normalize_text
 
 
 def test_normalize_text_strips_accents_and_spacing():

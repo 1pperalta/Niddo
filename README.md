@@ -1,4 +1,4 @@
-# estatia
+# niddo
 
 Real-estate agent built with LangGraph, Pydantic, and OpenAI.
 
@@ -8,7 +8,7 @@ Real-estate agent built with LangGraph, Pydantic, and OpenAI.
 - LangGraph for orchestration
 - OpenAI Responses API for structured parsing, evaluation, and report generation
 - Pydantic v2 for contracts
-- FastAPI for the web app
+- FastAPI for the web app (Server-Side Rendering with Jinja2)
 
 ## Run
 
@@ -17,7 +17,7 @@ uv venv
 source .venv/bin/activate
 uv sync --extra dev
 uv run playwright install chromium
-uv run uvicorn estatia.app:app --reload --app-dir src
+uv run uvicorn niddo.app:app --reload --app-dir src
 ```
 
 Open `http://127.0.0.1:8000`.
@@ -27,16 +27,19 @@ If you want the news agent to use Tavily, also set `TAVILY_API_KEY` in `.env`.
 
 ## Current status
 
-- The LangGraph workflow is implemented.
-- User input is parsed into Pydantic models through OpenAI structured outputs.
-- Listings use a Playwright-backed web search adapter.
-- News uses Tavily search when `TAVILY_API_KEY` is configured.
-- The WhatsApp validator is a standby stub.
-- The final seller step renders HTML in the app UI.
-- The default models are cost-oriented for development: `gpt-5-nano` for fast parsing and `gpt-5-mini` for evaluation/report generation.
+- **Unified Pydantic State**: The entire LangGraph workflow is orchestrated using a single, serializable Pydantic model (`AgentState`), ensuring type safety and consistency across all nodes.
+- **English-Spanish Schema**: The core logic and variable names follow strict English project conventions, while the user-facing output is dynamically rendered in Spanish or English based on user preference.
+- **Composite News Agent**: The news agent is now a concurrent composite agent. It executes multiple parallel Spanish queries to Tavily, covering specific dimensions:
+    - **Mobility/Transport**: Public transport, traffic, and access.
+    - **Security**: Local safety and crime reports.
+    - **Commercialization**: Proximity to shops and commercial zones.
+    - **Nightlife**: Bars, restaurants, and social activity.
+    - **Environmental Risks**: Flooding and climate-related risks.
+- **Structured Parsing & Evaluation**: Uses OpenAI structured outputs to map user instructions into a detailed `Requirement` list and evaluate `Property` candidates against a quality threshold.
+- **Automated Graph Visualization**: Includes logic to generate Mermaid diagrams of the system's internal orchestration and the news agent's concurrent logic.
 
 ## Next
 
-- Improve listing robustness and provider coverage for real-world scraping.
-- Improve neighborhood inference and source filtering in the Tavily-backed news agent.
-- Add persistence for runs, traces, and generated reports.
+- Implement **NewsAPI** and **GDELT** adapters into the composite news agent for deeper journalistic and macro-trend coverage.
+- Refactor the `PlaywrightListingClient` to fully support the new Pydantic requirement/property schemas.
+- Improve persistence for runs, traces, and generated reports.

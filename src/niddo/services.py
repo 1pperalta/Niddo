@@ -1,5 +1,5 @@
-import concurrent.futures
 from __future__ import annotations
+import concurrent.futures
 
 import json
 import logging
@@ -13,10 +13,10 @@ from urllib.request import urlopen
 from openai import OpenAI
 from pydantic import BaseModel
 
-from estatia.config import Settings
-from estatia.models import EvalResult, Requirement, Property, NewsItem, Proposal, RequirementList
+from niddo.config import Settings
+from niddo.models import EvalResult, Requirement, Property, NewsItem, Proposal, RequirementList
 
-logger = logging.getLogger("estatia.services")
+logger = logging.getLogger("niddo.services")
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
@@ -74,7 +74,7 @@ class OpenAIWorkflowService(IntakeService, EvaluationService, SellerService):
         self.provider = settings.llm_provider
         if self.provider == "nvidia":
             if not settings.nvidia_api_key:
-                raise ValueError("NVIDIA_API_KEY is required when ESTATIA_LLM_PROVIDER=nvidia.")
+                raise ValueError("NVIDIA_API_KEY is required when NIDDO_LLM_PROVIDER=nvidia.")
             self.client = OpenAI(
                 api_key=settings.nvidia_api_key,
                 base_url=settings.nvidia_base_url or "https://integrate.api.nvidia.com/v1",
@@ -236,7 +236,30 @@ class OpenAIWorkflowService(IntakeService, EvaluationService, SellerService):
 
 class DummyListingService(ListingService):
     def search(self, request: Requirement) -> list[Property]:
-        return []
+        return [
+            Property(
+                location="Teusaquillo",
+                price=3200000,
+                area=68.0,
+                bedrooms=2,
+                parking_spaces=1,
+                admin_fee=250000,
+                bathrooms=2,
+                property_type="apartment",
+                score=0.9
+            ),
+            Property(
+                location="Chapinero",
+                price=3500000,
+                area=75.0,
+                bedrooms=2,
+                parking_spaces=1,
+                admin_fee=300000,
+                bathrooms=2,
+                property_type="apartment",
+                score=0.75
+            )
+        ]
 
 
 class DummyNewsService(NewsService):

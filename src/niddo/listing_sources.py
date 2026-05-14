@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
-from estatia.config import Settings
-from estatia.models import Listing, ListingLocation, ListingProperty, PropertyType, UserRequest
+from niddo.config import Settings
+from niddo.models import Listing, ListingLocation, ListingProperty, PropertyType, UserRequest
 
 try:
     from bs4 import BeautifulSoup
@@ -26,7 +26,7 @@ except Exception:  # pragma: no cover - import depends on local environment
     Page = Any
     sync_playwright = None
 
-logger = logging.getLogger("estatia.listing_sources")
+logger = logging.getLogger("niddo.listing_sources")
 
 
 FINCA_RAIZ_BASE_URL = "https://www.fincaraiz.com.co"

@@ -187,14 +187,5 @@ class AgentState(BaseModel):
     run_news: bool = False
     retries: int = 0
     feedback: str = ""
-from pydantic import BaseModel
-class EvalResult(BaseModel):
-    score: float
-    threshold: float
-    passed: bool
-    reasons: list[str] = []
-    required_fixes: list[str] = []
-from pydantic import BaseModel
-from estatia.models import Requirement
 class RequirementList(BaseModel):
     requirements: list[Requirement]

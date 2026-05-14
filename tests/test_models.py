@@ -1,4 +1,4 @@
-from estatia.models import Budget, Intent, PropertyType, UserRequest
+from niddo.models import Budget, Intent, PropertyType, UserRequest
 
 
 def test_budget_currency_normalizes_to_uppercase():

@@ -8,12 +8,12 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 
-from estatia.config import settings
-from estatia.graph import build_graph
-from estatia.logging_utils import configure_logging
-from estatia.services import (
+from niddo.config import settings
+from niddo.graph import build_graph
+from niddo.logging_utils import configure_logging
+from niddo.services import (
     OpenAIWorkflowService,
-    PlaywrightListingService,
+    DummyListingService,
     Services,
     StandbyWhatsAppService,
     TavilyNewsService,
@@ -21,8 +21,8 @@ from estatia.services import (
 
 
 configure_logging(settings.log_level)
-logger = logging.getLogger("estatia.app")
-templates = Jinja2Templates(directory="src/estatia/templates")
+logger = logging.getLogger("niddo.app")
+templates = Jinja2Templates(directory="src/niddo/templates")
 app = FastAPI(title=settings.app_name)
 
 
@@ -30,7 +30,7 @@ def build_ui_text(language: str) -> dict[str, str]:
     is_spanish = language == "es"
     return {
         "lang": language,
-        "page_title": "Estatia",
+        "page_title": "Niddo",
         "brief": "Resumen inmobiliario" if is_spanish else "Real estate brief",
         "intro": (
             "Escribe la solicitud como la describiría un cliente. El flujo estructura la entrada, "
@@ -92,7 +92,7 @@ def build_services() -> Services:
         intake=workflow,
         evaluation=workflow,
         seller=workflow,
-        listing=PlaywrightListingService(settings),
+        listing=DummyListingService(),
         news=TavilyNewsService(settings),
         whatsapp=StandbyWhatsAppService(),
     )

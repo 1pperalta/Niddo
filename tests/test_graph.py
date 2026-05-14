@@ -1,13 +1,13 @@
-from estatia.config import Settings
-from estatia.graph import build_graph
-from estatia.models import (
+from niddo.config import Settings
+from niddo.graph import build_graph
+from niddo.models import (
     EvalResult,
     Requirement,
     Property,
     NewsItem,
     Proposal,
 )
-from estatia.services import Services, StandbyWhatsAppService
+from niddo.services import Services, StandbyWhatsAppService
 
 
 class StaticListingService:

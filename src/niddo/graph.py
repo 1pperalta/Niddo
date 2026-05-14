@@ -4,11 +4,11 @@ import logging
 
 from langgraph.graph import END, START, StateGraph
 
-from estatia.config import Settings
-from estatia.models import AgentState, Requirement, Property, NewsItem, Proposal
-from estatia.services import Services
+from niddo.config import Settings
+from niddo.models import AgentState, Requirement, Property, NewsItem, Proposal
+from niddo.services import Services
 
-logger = logging.getLogger("estatia.graph")
+logger = logging.getLogger("niddo.graph")
 
 
 def build_graph(services: Services, settings: Settings):
@@ -16,7 +16,8 @@ def build_graph(services: Services, settings: Settings):
 
     def intake_node(state: AgentState) -> dict:
         logger.info("Node intake:start")
-        requirements = services.intake.parse_request(state.user_text)
+        text_to_parse = state.user_text or state.raw_text or ""
+        requirements = services.intake.parse_request(text_to_parse)
         logger.info("Node intake:done requirements_found=%s", len(requirements) if requirements else 0)
         return {
             "requirements": requirements,
@@ -238,7 +239,7 @@ def render_html(proposal: Proposal, requirement: Requirement | None, news: list[
     return f"""
     <section class="report">
       <header class="hero">
-        <p class="eyebrow">Propuesta de Estatia</p>
+        <p class="eyebrow">Propuesta de Niddo</p>
         <h1>Recomendaciones de Propiedades</h1>
         {req_html}
         <div class="meta">

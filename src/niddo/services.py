@@ -1,5 +1,6 @@
 from __future__ import annotations
 import concurrent.futures
+import time
 
 import json
 import logging
@@ -82,7 +83,12 @@ class OpenAIWorkflowService(IntakeService, EvaluationService, SellerService):
         else:
             if not settings.openai_api_key:
                 raise ValueError("OPENAI_API_KEY is required to run the workflow.")
-            self.client = OpenAI(api_key=settings.openai_api_key)
+            
+            base_url = None
+            if settings.openai_api_key.startswith("AIza"):
+                base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+                
+            self.client = OpenAI(api_key=settings.openai_api_key, base_url=base_url)
 
     def _parse_structured(
         self,
@@ -91,7 +97,7 @@ class OpenAIWorkflowService(IntakeService, EvaluationService, SellerService):
         system_prompt: str,
         user_content: str,
     ) -> ModelT:
-        if self.provider == "nvidia":
+        if self.provider == "nvidia" or "generativelanguage.googleapis.com" in str(self.client.base_url):
             return self._parse_with_chat_json(model, schema, system_prompt, user_content)
         response = self.client.responses.parse(
             model=model,
@@ -111,6 +117,7 @@ class OpenAIWorkflowService(IntakeService, EvaluationService, SellerService):
         user_content: str,
     ) -> ModelT:
         schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=True)
+        
         completion = self.client.chat.completions.create(
             model=model,
             messages=[

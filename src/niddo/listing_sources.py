@@ -11,52 +11,45 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 
 from niddo.config import Settings
-from niddo.models import Listing, ListingLocation, ListingProperty, PropertyType, UserRequest
+from niddo.models import Property, Requirement
 
 try:
     from bs4 import BeautifulSoup
-except Exception:  # pragma: no cover - import depends on local environment
+except Exception:
     BeautifulSoup = None
 
 try:
     from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import Page, sync_playwright
-except Exception:  # pragma: no cover - import depends on local environment
+except Exception:
     PlaywrightError = Exception
     Page = Any
     sync_playwright = None
 
 logger = logging.getLogger("niddo.listing_sources")
 
-
 FINCA_RAIZ_BASE_URL = "https://www.fincaraiz.com.co"
 DEBUG_DIR = Path("debug")
-
 
 @dataclass(slots=True)
 class SearchResult:
     title: str
     url: str
 
-
 class PlaywrightListingClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def search(self, request: UserRequest) -> list[Listing]:
+    def search(self, request: Requirement) -> list[Property]:
         if sync_playwright is None:
-            logger.warning("Playwright is not available in the current environment")
+            logger.warning("Playwright is not available")
             return []
         if BeautifulSoup is None:
-            logger.warning("beautifulsoup4 is not available in the current environment")
+            logger.warning("beautifulsoup4 is not available")
             return []
-        logger.info(
-            "Playwright search:start city=%s neighborhood=%s budget_max=%s radius_km=%s",
-            request.location.city,
-            request.location.neighborhood,
-            request.budget.max,
-            request.location.radius_km,
-        )
+            
+        logger.info("Playwright search:start location=%s price=%s", request.location, request.price)
+        
         try:
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch(headless=self.settings.browser_headless)
@@ -69,35 +62,33 @@ class PlaywrightListingClient:
                 )
                 page = context.new_page()
                 page.set_default_timeout(self.settings.scrape_timeout_ms)
+                
                 results = self._search_results(page, request)
                 logger.info("Playwright search:search_results=%s", len(results))
-                listings: list[Listing] = []
+                
+                properties: list[Property] = []
                 for result in results:
                     logger.info("Playwright search:visiting %s", result.url)
                     details_page = context.new_page()
                     details_page.set_default_timeout(self.settings.scrape_timeout_ms)
                     try:
                         details_page.goto(result.url, wait_until="domcontentloaded")
-                        listing = self._extract_listing(details_page, result, request)
-                        if listing:
-                            logger.info("Playwright search:listing_extracted title=%s price=%s", listing.title, listing.price)
-                            listings.append(listing)
-                        else:
-                            logger.warning("Playwright search:listing extraction failed for %s", result.url)
+                        property_item = self._extract_listing(details_page, result, request)
+                        if property_item:
+                            properties.append(property_item)
                     except PlaywrightError:
                         logger.exception("Playwright search:page visit failed for %s", result.url)
-                        continue
                     finally:
                         details_page.close()
                 browser.close()
         except PlaywrightError:
             logger.exception("Playwright search failed")
             return []
-        listings.sort(key=lambda item: item.score, reverse=True)
-        logger.info("Playwright search:done listings=%s", len(listings[: self.settings.search_results_limit]))
-        return listings[: self.settings.search_results_limit]
+            
+        properties.sort(key=lambda item: item.score, reverse=True)
+        return properties[: self.settings.search_results_limit]
 
-    def _search_results(self, page: Page, request: UserRequest) -> list[SearchResult]:
+    def _search_results(self, page: Page, request: Requirement) -> list[SearchResult]:
         results_url = self._direct_results_url(request)
         logger.info("FincaRaiz direct results url=%s", results_url)
         try:
@@ -106,8 +97,6 @@ class PlaywrightListingClient:
         except PlaywrightError:
             logger.exception("FincaRaiz direct results page failed")
             return []
-        logger.info("FincaRaiz results url=%s", page.url)
-        logger.info("FincaRaiz results title=%s", page.title())
 
         results: list[SearchResult] = []
         seen: set[str] = set()
@@ -120,522 +109,210 @@ class PlaywrightListingClient:
             "a[href*='/lote-en-']"
         )
         count = min(anchors.count(), self.settings.search_results_limit * 12)
-        logger.info("FincaRaiz raw anchors=%s", count)
         for index in range(count):
             href = anchors.nth(index).get_attribute("href") or ""
             title = (anchors.nth(index).text_content() or "").strip()
             normalized = self._normalize_url(href)
             if not normalized or normalized in seen:
                 continue
-            if "fincaraiz.com.co" not in normalized:
-                continue
-            if "/inmuebles-colombia/" in normalized or "/blog/" in normalized or "/inmobiliarias/" in normalized:
+            if "fincaraiz.com.co" not in normalized or "/inmuebles-colombia/" in normalized or "/blog/" in normalized or "/inmobiliarias/" in normalized:
                 continue
             seen.add(normalized)
             results.append(SearchResult(title=title or normalized, url=normalized))
             if len(results) >= self.settings.search_results_limit * 3:
                 break
-        logger.info("Playwright normalized search results=%s", len(results))
         return results
 
-    def _direct_results_url(self, request: UserRequest) -> str:
-        intent = "arriendo" if request.intent.value == "rent" else "venta"
-        property_slug = self._property_results_slug(request.property.type)
-        city_slug = self._slugify(request.location.city or "bogota")
-        region_slug = self._region_slug(request.location.city or "")
+    def _direct_results_url(self, request: Requirement) -> str:
+        intent = "arriendo"
+        property_slug = self._property_results_slug(request.property_type)
+        city_slug = self._slugify(request.location.split(',')[0] if request.location else "bogota")
+        region_slug = self._region_slug(request.location or "")
         return f"{FINCA_RAIZ_BASE_URL}/{intent}/{property_slug}/{city_slug}/{region_slug}"
 
-    def _submit_finca_raiz_form(self, page: Page, request: UserRequest) -> bool:
-        logger.info("Playwright finca raiz home=%s", FINCA_RAIZ_BASE_URL)
-        try:
-            page.goto(FINCA_RAIZ_BASE_URL, wait_until="domcontentloaded")
-            page.wait_for_timeout(1500)
-        except PlaywrightError:
-            logger.exception("FincaRaiz home page failed")
-            return False
-
-        self._accept_cookies(page)
-        self._select_intent(page, request)
-        self._fill_location(page, request)
-        self._select_property_type(page, request)
-
-        search_buttons = [
-            page.get_by_role("button", name=re.compile(r"buscar", re.I)),
-            page.get_by_role("button", name=re.compile(r"ver inmuebles", re.I)),
-            page.locator("button[type='submit']"),
-        ]
-        for button in search_buttons:
-            try:
-                if button.count() and button.first.is_visible():
-                    button.first.click()
-                    page.wait_for_load_state("domcontentloaded")
-                    page.wait_for_timeout(2500)
-                    return True
-            except PlaywrightError:
-                logger.exception("FincaRaiz search button interaction failed")
-        try:
-            location_input = self._location_input(page)
-            if location_input is not None:
-                location_input.press("Enter")
-                page.wait_for_load_state("domcontentloaded")
-                page.wait_for_timeout(2500)
-                return True
-        except PlaywrightError:
-            logger.exception("FincaRaiz fallback Enter search failed")
-        return False
-
-    def _accept_cookies(self, page: Page) -> None:
-        buttons = [
-            page.get_by_role("button", name=re.compile(r"acept", re.I)),
-            page.get_by_role("button", name=re.compile(r"entendido", re.I)),
-            page.get_by_role("button", name=re.compile(r"continuar", re.I)),
-        ]
-        for button in buttons:
-            try:
-                if button.count() and button.first.is_visible():
-                    button.first.click()
-                    page.wait_for_timeout(400)
-                    logger.info("FincaRaiz cookies accepted")
-                    return
-            except PlaywrightError:
-                continue
-
-    def _select_intent(self, page: Page, request: UserRequest) -> None:
-        label = "Arriendo" if request.intent.value == "rent" else "Venta"
-        options = [
-            page.get_by_role("button", name=re.compile(label, re.I)),
-            page.get_by_role("tab", name=re.compile(label, re.I)),
-            page.get_by_text(re.compile(label, re.I), exact=False),
-        ]
-        for option in options:
-            try:
-                if option.count() and option.first.is_visible():
-                    option.first.click()
-                    page.wait_for_timeout(500)
-                    logger.info("FincaRaiz intent selected=%s", label)
-                    return
-            except PlaywrightError:
-                continue
-        logger.warning("FincaRaiz intent selector not found for %s", label)
-
-    def _fill_location(self, page: Page, request: UserRequest) -> None:
-        location_input = self._location_input(page)
-        if location_input is None:
-            logger.warning("FincaRaiz location input not found")
-            self._log_visible_inputs(page)
-            self._save_debug_artifacts(page, "fincaraiz-location-missing")
-            return
-
-        target = request.location.neighborhood or request.location.city or ""
-        if request.location.neighborhood and request.location.city:
-            target = f"{request.location.neighborhood}, {request.location.city}"
-        logger.info("FincaRaiz location target=%s", target)
-
-        try:
-            location_input.click()
-            location_input.fill(target)
-            page.wait_for_timeout(1500)
-            suggestions = page.locator("[role='option'], li, [data-testid*='option']")
-            suggestion_count = min(suggestions.count(), 10)
-            logger.info("FincaRaiz location suggestions=%s", suggestion_count)
-            for index in range(suggestion_count):
-                text = (suggestions.nth(index).text_content() or "").strip()
-                if not text:
-                    continue
-                if request.location.city and self._slugify(request.location.city) in self._slugify(text):
-                    suggestions.nth(index).click()
-                    page.wait_for_timeout(500)
-                    logger.info("FincaRaiz location selected=%s", text)
-                    return
-            location_input.press("Enter")
-        except PlaywrightError:
-            logger.exception("FincaRaiz location interaction failed")
-            self._save_debug_artifacts(page, "fincaraiz-location-error")
-
-    def _select_property_type(self, page: Page, request: UserRequest) -> None:
-        if request.property.type == PropertyType.ANY:
-            return
-        label = self._property_form_label(request.property.type)
-        openers = [
-            page.get_by_role("button", name=re.compile(r"tipo", re.I)),
-            page.get_by_text(re.compile(r"tipo", re.I), exact=False),
-            page.locator("[data-testid*='property'], [data-testid*='tipo']"),
-        ]
-        for opener in openers:
-            try:
-                if opener.count() and opener.first.is_visible():
-                    opener.first.click()
-                    page.wait_for_timeout(400)
-                    break
-            except PlaywrightError:
-                continue
-
-        choices = [
-            page.get_by_role("option", name=re.compile(label, re.I)),
-            page.get_by_text(re.compile(label, re.I), exact=False),
-            page.locator(f"text=/{label}/i"),
-        ]
-        for choice in choices:
-            try:
-                if choice.count() and choice.first.is_visible():
-                    choice.first.click()
-                    page.wait_for_timeout(400)
-                    logger.info("FincaRaiz property type selected=%s", label)
-                    return
-            except PlaywrightError:
-                continue
-        logger.warning("FincaRaiz property type selector not found for %s", label)
-
-    def _location_input(self, page: Page):
-        selectors = [
-            "input.location-search__input",
-            "input[placeholder*='ubicación o palabra clave' i]",
-            "input[placeholder*='ubicacion o palabra clave' i]",
-            "input[placeholder*='palabra clave' i]",
-            "input[placeholder*='ciudad' i]",
-            "input[placeholder*='ubic' i]",
-            "input[aria-label*='ciudad' i]",
-            "input[aria-label*='ubic' i]",
-            "input[name*='city' i]",
-            "input[name*='location' i]",
-            "input[type='search']",
-        ]
-        for selector in selectors:
-            locator = page.locator(selector)
-            try:
-                if locator.count() and locator.first.is_visible():
-                    logger.info("FincaRaiz location selector matched=%s", selector)
-                    return locator.first
-            except PlaywrightError:
-                continue
-        return None
-
-    def _log_visible_inputs(self, page: Page) -> None:
-        script = """
-        () => Array.from(document.querySelectorAll('input, textarea, button'))
-          .slice(0, 30)
-          .map((el) => ({
-            tag: el.tagName.toLowerCase(),
-            type: el.getAttribute('type'),
-            id: el.id,
-            name: el.getAttribute('name'),
-            className: el.className,
-            placeholder: el.getAttribute('placeholder'),
-            ariaLabel: el.getAttribute('aria-label'),
-            text: (el.textContent || '').trim().slice(0, 80),
-            visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length),
-          }));
-        """
-        try:
-            controls = page.evaluate(script)
-            logger.info("FincaRaiz visible controls=%s", controls)
-        except PlaywrightError:
-            logger.exception("Failed to inspect visible controls on FincaRaiz")
-
-    def _save_debug_artifacts(self, page: Page, stem: str) -> None:
-        try:
-            DEBUG_DIR.mkdir(exist_ok=True)
-            html_path = DEBUG_DIR / f"{stem}.html"
-            png_path = DEBUG_DIR / f"{stem}.png"
-            html_path.write_text(page.content(), encoding="utf-8")
-            page.screenshot(path=str(png_path), full_page=True)
-            logger.info("Saved FincaRaiz debug artifacts html=%s png=%s", html_path, png_path)
-        except Exception:
-            logger.exception("Failed to save FincaRaiz debug artifacts")
-
-    def _extract_listing(self, page: Page, result: SearchResult, request: UserRequest) -> Listing | None:
+    def _extract_listing(self, page: Page, result: SearchResult, request: Requirement) -> Property | None:
         html = page.content()
         metadata = self._extract_structured_candidates(html)
         best = self._pick_candidate(metadata)
 
-        title = self._coalesce(
-            best.get("name"),
-            best.get("title"),
-            page.title(),
-            result.title,
-        )
-        price = self._extract_price(best) or self._extract_price_from_text(page.locator("body").text_content() or "")
+        raw_text = page.locator("body").text_content() or ""
+        
+        price = self._extract_price(best) or self._extract_price_from_text(raw_text)
         if price is None:
             return None
 
         address = best.get("address")
-        location = ListingLocation(
-            city=self._coalesce(self._address_field(address, "addressLocality"), request.location.city, "Unknown"),
-            neighborhood=self._coalesce(
-                self._address_field(address, "addressRegion"),
-                request.location.neighborhood,
-            ),
-            address=self._format_address(address),
+        locality = self._address_field(address, "addressLocality")
+        region = self._address_field(address, "addressRegion")
+        
+        parts = [p for p in (region, locality) if p]
+        location_str = ", ".join(parts) if parts else request.location
+        
+        property_type = self._normalize_property_type(self._coalesce(best.get("@type"), best.get("category"), request.property_type))
+        
+        score = self._score_listing(price, location_str, request)
+        
+        # Fallback regex extraction for missing JSON-LD data
+        bedrooms = self._extract_int(best, ("numberOfRooms", "numberOfBedrooms", "bedrooms")) or self._extract_regex_int(r"(\d+)\s*(hab|alcoba|dormitorio)", raw_text) or 0
+        bathrooms = self._extract_int(best, ("numberOfBathroomsTotal", "bathrooms")) or self._extract_regex_int(r"(\d+)\s*baño", raw_text) or 0
+        area = float(self._extract_area(best) or self._extract_regex_float(r"([\d\.,]+)\s*m", raw_text) or 0.0)
+        parking = self._extract_regex_int(r"(\d+)\s*(parqueadero|garaje)", raw_text) or 0
+        admin_fee = self._extract_regex_int(r"(?:admin|administración).*?\$?\s?([\d\.\,]{4,})", raw_text) or 0
+        
+        return Property(
+            location=location_str,
+            price=int(price),
+            area=area,
+            bedrooms=bedrooms,
+            parking_spaces=parking,
+            admin_fee=admin_fee,
+            bathrooms=bathrooms,
+            property_type=property_type,
+            score=score,
+            url=result.url
         )
-
-        property_type = self._normalize_property_type(
-            self._coalesce(best.get("@type"), best.get("category"), request.property.type.value)
-        )
-        listing = Listing(
-            id=hashlib.md5(result.url.encode("utf-8")).hexdigest()[:12],
-            source=urlparse(result.url).netloc,
-            url=result.url,
-            title=title,
-            price=price,
-            currency=self._extract_currency(best) or request.budget.currency,
-            location=location,
-            property=ListingProperty(
-                type=property_type,
-                bedrooms=self._extract_int(best, ("numberOfRooms", "numberOfBedrooms", "bedrooms")),
-                bathrooms=self._extract_int(best, ("numberOfBathroomsTotal", "bathrooms")),
-                area_m2=self._extract_area(best),
-            ),
-            highlights=self._extract_highlights(best),
-            images=self._extract_images(best),
-            score=self._score_listing(price, location, request),
-        )
-        return listing
 
     def _extract_structured_candidates(self, html: str) -> list[dict[str, Any]]:
-        if BeautifulSoup is None:
-            return []
+        if BeautifulSoup is None: return []
         soup = BeautifulSoup(html, "html.parser")
-        candidates: list[dict[str, Any]] = []
+        candidates = []
         for script in soup.select("script[type='application/ld+json']"):
             raw = script.string or script.get_text(strip=True)
-            if not raw:
-                continue
+            if not raw: continue
             try:
                 data = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
+            except json.JSONDecodeError: continue
             candidates.extend(self._flatten_json_ld(data))
-        og_title = soup.find("meta", attrs={"property": "og:title"})
-        og_image = soup.find("meta", attrs={"property": "og:image"})
-        if og_title:
-            candidates.append(
-                {
-                    "name": og_title.get("content"),
-                    "image": og_image.get("content") if og_image else None,
-                }
-            )
         return candidates
 
     def _flatten_json_ld(self, data: Any) -> list[dict[str, Any]]:
         if isinstance(data, list):
-            items: list[dict[str, Any]] = []
-            for entry in data:
-                items.extend(self._flatten_json_ld(entry))
+            items = []
+            for entry in data: items.extend(self._flatten_json_ld(entry))
             return items
-        if not isinstance(data, dict):
-            return []
+        if not isinstance(data, dict): return []
         graph = data.get("@graph")
         if isinstance(graph, list):
-            items: list[dict[str, Any]] = []
-            for entry in graph:
-                items.extend(self._flatten_json_ld(entry))
+            items = []
+            for entry in graph: items.extend(self._flatten_json_ld(entry))
             return items
         items = [data]
         offers = data.get("offers")
-        if isinstance(offers, dict):
-            items.append(offers)
+        if isinstance(offers, dict): items.append(offers)
         return items
 
     def _pick_candidate(self, candidates: list[dict[str, Any]]) -> dict[str, Any]:
         scored = []
         for item in candidates:
             score = 0
-            if item.get("price") or item.get("priceSpecification"):
-                score += 3
-            if item.get("name"):
-                score += 2
-            if item.get("address"):
-                score += 2
-            if item.get("@type"):
-                score += 1
+            if item.get("price") or item.get("priceSpecification"): score += 3
+            if item.get("name"): score += 2
+            if item.get("address"): score += 2
+            if item.get("@type"): score += 1
             scored.append((score, item))
         scored.sort(key=lambda pair: pair[0], reverse=True)
         return scored[0][1] if scored else {}
 
     def _extract_price(self, data: dict[str, Any]) -> float | None:
-        if "price" in data:
-            return self._to_float(data.get("price"))
+        if "price" in data: return self._to_float(data.get("price"))
         price_spec = data.get("priceSpecification")
-        if isinstance(price_spec, dict):
-            return self._to_float(price_spec.get("price"))
+        if isinstance(price_spec, dict): return self._to_float(price_spec.get("price"))
         offers = data.get("offers")
-        if isinstance(offers, dict):
-            return self._to_float(offers.get("price"))
+        if isinstance(offers, dict): return self._to_float(offers.get("price"))
         return None
 
     def _extract_price_from_text(self, text: str) -> float | None:
         match = re.search(r"\$?\s?([\d\.\,]{6,})", text)
-        if not match:
-            return None
-        return self._to_float(match.group(1))
+        return self._to_float(match.group(1)) if match else None
 
-    def _extract_currency(self, data: dict[str, Any]) -> str | None:
-        for key in ("priceCurrency", "currency"):
-            value = data.get(key)
-            if isinstance(value, str) and value:
-                return value.upper()
-        offers = data.get("offers")
-        if isinstance(offers, dict):
-            value = offers.get("priceCurrency")
-            if isinstance(value, str) and value:
-                return value.upper()
+    def _extract_regex_int(self, pattern: str, text: str) -> int | None:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            try:
+                return int(self._to_float(match.group(1)) or 0)
+            except ValueError:
+                pass
+        return None
+
+    def _extract_regex_float(self, pattern: str, text: str) -> float | None:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return self._to_float(match.group(1))
         return None
 
     def _extract_int(self, data: dict[str, Any], keys: tuple[str, ...]) -> int | None:
         for key in keys:
             value = data.get(key)
-            if value is None:
-                continue
-            try:
-                return int(float(str(value)))
-            except ValueError:
-                continue
+            if value is not None:
+                try: return int(float(str(value)))
+                except ValueError: continue
         return None
 
     def _extract_area(self, data: dict[str, Any]) -> int | None:
         area = data.get("floorSize")
-        if isinstance(area, dict):
-            value = area.get("value")
-            numeric = self._to_float(value)
-            return int(numeric) if numeric is not None else None
-        numeric = self._to_float(data.get("area"))
-        return int(numeric) if numeric is not None else None
-
-    def _extract_highlights(self, data: dict[str, Any]) -> list[str]:
-        highlights: list[str] = []
-        for key in ("description", "category"):
-            value = data.get(key)
-            if isinstance(value, str) and value:
-                highlights.append(value[:180])
-        return highlights[:3]
-
-    def _extract_images(self, data: dict[str, Any]) -> list[str]:
-        images = data.get("image")
-        if isinstance(images, str):
-            return [images]
-        if isinstance(images, list):
-            return [image for image in images if isinstance(image, str)][:3]
-        return []
-
-    def _format_address(self, address: Any) -> str | None:
-        if not isinstance(address, dict):
-            return None
-        parts = [
-            address.get("streetAddress"),
-            address.get("addressLocality"),
-            address.get("addressRegion"),
-        ]
-        clean = [part for part in parts if isinstance(part, str) and part]
-        return ", ".join(clean) if clean else None
+        if isinstance(area, dict): return int(self._to_float(area.get("value")) or 0)
+        return int(self._to_float(data.get("area")) or 0)
 
     def _address_field(self, address: Any, key: str) -> str | None:
-        if isinstance(address, dict):
-            value = address.get(key)
-            if isinstance(value, str):
-                return value
-        return None
+        return address.get(key) if isinstance(address, dict) and isinstance(address.get(key), str) else None
 
-    def _normalize_property_type(self, raw: str) -> PropertyType:
+    def _normalize_property_type(self, raw: str) -> str:
         lowered = raw.lower()
-        if "house" in lowered or "casa" in lowered:
-            return PropertyType.HOUSE
-        if "studio" in lowered:
-            return PropertyType.STUDIO
-        if "loft" in lowered:
-            return PropertyType.LOFT
-        if "office" in lowered or "oficina" in lowered:
-            return PropertyType.OFFICE
-        if "land" in lowered or "lote" in lowered:
-            return PropertyType.LAND
-        return PropertyType.APARTMENT
+        if "house" in lowered or "casa" in lowered: return "house"
+        if "studio" in lowered or "apartaestudio" in lowered: return "studio"
+        return "apartment"
 
-    def _score_listing(self, price: float, location: ListingLocation, request: UserRequest) -> float:
+    def _score_listing(self, price: float, location: str, request: Requirement) -> float:
         score = 0.2
-        if request.location.city and location.city.lower() == request.location.city.lower():
-            score += 0.3
-        if request.location.neighborhood and location.neighborhood:
-            if request.location.neighborhood.lower() in location.neighborhood.lower():
-                score += 0.25
-        if request.budget.max:
-            score += max(0.0, 0.25 - abs(price - request.budget.max) / request.budget.max)
+        req_loc = request.location.lower()
+        if req_loc in location.lower():
+            score += 0.4
+        if request.price:
+            score += max(0.0, 0.4 - abs(price - request.price) / request.price)
         return round(score, 3)
 
     def _normalize_url(self, url: str) -> str:
-        if not url:
-            return ""
-        if url.startswith("//"):
-            return f"https:{url}"
-        if url.startswith("http://") or url.startswith("https://"):
-            return url
-        if url.startswith("/"):
-            return urljoin(FINCA_RAIZ_BASE_URL, url)
+        if not url: return ""
+        if url.startswith("//"): return f"https:{url}"
+        if url.startswith("http://") or url.startswith("https://"): return url
+        if url.startswith("/"): return urljoin(FINCA_RAIZ_BASE_URL, url)
         return ""
 
     def _coalesce(self, *values: Any) -> str:
         for value in values:
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return "Listing"
+            if isinstance(value, str) and value.strip(): return value.strip()
+        return "Unknown"
 
     def _to_float(self, value: Any) -> float | None:
-        if value is None:
-            return None
-        if isinstance(value, (int, float)):
-            return float(value)
+        if value is None: return None
+        if isinstance(value, (int, float)): return float(value)
         cleaned = re.sub(r"[^\d,\.]", "", str(value))
-        if not cleaned:
-            return None
-        if cleaned.count(",") == 1 and cleaned.count(".") > 1:
-            cleaned = cleaned.replace(".", "").replace(",", ".")
-        elif cleaned.count(",") > 1 and cleaned.count(".") == 0:
-            cleaned = cleaned.replace(",", "")
-        elif "," in cleaned and "." in cleaned:
-            cleaned = cleaned.replace(".", "").replace(",", ".")
-        else:
-            cleaned = cleaned.replace(",", "")
-        try:
-            return float(cleaned)
-        except ValueError:
-            return None
+        if not cleaned: return None
+        if cleaned.count(",") == 1 and cleaned.count(".") > 1: cleaned = cleaned.replace(".", "").replace(",", ".")
+        elif cleaned.count(",") > 1 and cleaned.count(".") == 0: cleaned = cleaned.replace(",", "")
+        elif "," in cleaned and "." in cleaned: cleaned = cleaned.replace(".", "").replace(",", ".")
+        else: cleaned = cleaned.replace(",", "")
+        try: return float(cleaned)
+        except ValueError: return None
 
-    def _property_form_label(self, property_type: PropertyType) -> str:
-        return {
-            PropertyType.APARTMENT: "Apartamento",
-            PropertyType.HOUSE: "Casa",
-            PropertyType.STUDIO: "Apartaestudio",
-            PropertyType.LOFT: "Loft",
-            PropertyType.OFFICE: "Oficina",
-            PropertyType.LAND: "Lote",
-            PropertyType.ANY: "Apartamento",
-        }[property_type]
-
-    def _property_results_slug(self, property_type: PropertyType) -> str:
-        return {
-            PropertyType.APARTMENT: "apartamentos",
-            PropertyType.HOUSE: "casas",
-            PropertyType.STUDIO: "apartaestudios",
-            PropertyType.LOFT: "apartamentos",
-            PropertyType.OFFICE: "oficinas",
-            PropertyType.LAND: "lotes",
-            PropertyType.ANY: "apartamentos",
-        }[property_type]
-
-    def _region_slug(self, city: str) -> str:
-        normalized = self._slugify(city)
+    def _property_results_slug(self, property_type: str) -> str:
         mapping = {
-            "bogota": "bogota-dc",
-            "medellin": "antioquia",
-            "envigado": "antioquia",
-            "sabaneta": "antioquia",
-            "rionegro": "antioquia",
-            "pereira": "risaralda",
-            "barranquilla": "atlantico",
-            "cali": "valle-del-cauca",
+            "apartment": "apartamentos",
+            "house": "casas",
+            "studio": "apartaestudios",
+            "office": "oficinas",
+            "land": "lotes"
         }
-        return mapping.get(normalized, "colombia")
+        return mapping.get(property_type.lower(), "apartamentos")
+
+    def _region_slug(self, location: str) -> str:
+        normalized = self._slugify(location)
+        if "bogota" in normalized: return "bogota-dc"
+        if "medellin" in normalized or "envigado" in normalized or "sabaneta" in normalized: return "antioquia"
+        if "cali" in normalized: return "valle-del-cauca"
+        return "colombia"
 
     def _slugify(self, value: str) -> str:
         normalized = unicodedata.normalize("NFKD", value)
         ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
-        clean = re.sub(r"[^a-zA-Z0-9]+", "-", ascii_only.lower()).strip("-")
-        return clean
+        return re.sub(r"[^a-zA-Z0-9]+", "-", ascii_only.lower()).strip("-")

@@ -257,6 +257,11 @@
         border-bottom: 1px solid var(--line);
       }
 
+      .report {
+        display: grid;
+        gap: 20px;
+      }
+
       .report .eyebrow {
         text-transform: uppercase;
         letter-spacing: 0.15em;
@@ -275,11 +280,17 @@
         color: var(--muted);
       }
 
+      .report .meta span {
+        padding: 7px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.7);
+      }
+
       .cards {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
         gap: 18px;
-        margin: 28px 0;
       }
 
       .card {
@@ -295,22 +306,66 @@
         margin-bottom: 12px;
       }
 
+      .card .eyebrow {
+        margin-bottom: 8px;
+        font-size: 0.69rem;
+        letter-spacing: 0.14em;
+      }
+
       .card p {
         margin-bottom: 8px;
       }
 
+      .card ul {
+        margin: 0 0 10px;
+        padding-left: 18px;
+        display: grid;
+        gap: 4px;
+      }
+
+      .card li {
+        color: #3e352d;
+        font-size: 0.94rem;
+      }
+
       .card strong {
         font-weight: 700;
+        color: #2f2720;
       }
 
-      .news-list {
-        display: grid;
-        gap: 12px;
-        padding-left: 18px;
+      .report .panel {
+        border-radius: 24px;
+        padding: 20px 22px;
+        background: rgba(255, 255, 255, 0.62);
+        border: 1px solid var(--line);
+        box-shadow: none;
+        backdrop-filter: none;
       }
 
-      .news-list li {
+      .report .panel::before {
+        display: none;
+      }
+
+      .report .panel h2 {
+        font-size: clamp(1.25rem, 2vw, 1.6rem);
+        margin-bottom: 10px;
+      }
+
+      .report .panel p {
+        color: #3f352b;
+        margin-bottom: 8px;
+      }
+
+      .report .panel ul {
         margin: 0;
+        padding-left: 18px;
+        display: grid;
+        gap: 6px;
+      }
+
+      .report .panel li {
+        color: #3f352b;
+        font-size: 0.95rem;
       }
 
       .news-summary {
@@ -346,6 +401,10 @@
 
       .listing-link:hover {
         border-bottom-color: var(--accent);
+      }
+
+      .report .cards + .panel {
+        margin-top: -2px;
       }
 
       .empty {
@@ -498,7 +557,9 @@
             <h1>{{ title }}</h1>
             <p class="intro-copy">{{ ui.intro }}</p>
           </div>
+          {% if ui.toggle_label %}
           <a class="language-toggle" href="{{ ui.toggle_href }}">{{ ui.toggle_label }}</a>
+          {% endif %}
         </div>
         <form id="search-form" method="post" action="/run">
           <input type="hidden" name="language" value="{{ ui.lang }}" />

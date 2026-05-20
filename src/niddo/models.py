@@ -162,6 +162,7 @@ class Property(BaseModel):
     bathrooms: int
     property_type: str
     score: float
+    url: str | None = None
 
 
 class NewsItem(BaseModel):
@@ -178,6 +179,7 @@ class Proposal(BaseModel):
 class AgentState(BaseModel):
     raw_text: str | None = None
     user_text: str | None = None
+    language: str = "en"
     properties: list[Property] | None = None
     requirements: list[Requirement] | None = None
     news_items: list[NewsItem] | None = None

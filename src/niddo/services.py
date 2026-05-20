@@ -15,6 +15,7 @@ from openai import OpenAI
 from pydantic import BaseModel
 
 from niddo.config import Settings
+from niddo.listing_sources import PlaywrightListingClient
 from niddo.models import EvalResult, Requirement, Property, NewsItem, Proposal, RequirementList
 
 logger = logging.getLogger("niddo.services")
@@ -241,6 +242,24 @@ class OpenAIWorkflowService(IntakeService, EvaluationService, SellerService):
         return parsed
 
 
+class PlaywrightListingService(ListingService):
+    def __init__(self, settings: Settings, fallback: ListingService | None = None) -> None:
+        self.client = PlaywrightListingClient(settings)
+        self.fallback = fallback
+
+    def search(self, request: Requirement) -> list[Property]:
+        logger.info("Playwright listing search:start")
+        properties = self.client.search(request)
+        if properties:
+            logger.info("Playwright listing search:done properties=%s", len(properties))
+            return properties
+        if self.fallback is not None:
+            logger.warning("Playwright listing search returned no properties, using configured fallback service")
+            return self.fallback.search(request)
+        logger.warning("Playwright listing search returned no properties")
+        return []
+
+
 class DummyListingService(ListingService):
     def search(self, request: Requirement) -> list[Property]:
         return [
@@ -253,7 +272,8 @@ class DummyListingService(ListingService):
                 admin_fee=250000,
                 bathrooms=2,
                 property_type="apartment",
-                score=0.9
+                score=0.9,
+                url="https://www.fincaraiz.com.co/inmueble/apartamento-en-arriendo/teusaquillo/bogota/1234567"
             ),
             Property(
                 location="Chapinero",
@@ -264,7 +284,8 @@ class DummyListingService(ListingService):
                 admin_fee=300000,
                 bathrooms=2,
                 property_type="apartment",
-                score=0.75
+                score=0.75,
+                url="https://www.fincaraiz.com.co/inmueble/apartamento-en-arriendo/chapinero/bogota/7654321"
             )
         ]
 

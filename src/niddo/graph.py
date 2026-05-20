@@ -5,7 +5,7 @@ import logging
 from langgraph.graph import END, START, StateGraph
 
 from niddo.config import Settings
-from niddo.models import AgentState, Requirement, Property, NewsItem, Proposal
+from niddo.models import AgentState, Requirement, Property, NewsItem, Proposal, EvalResult
 from niddo.services import Services
 
 logger = logging.getLogger("niddo.graph")
@@ -112,10 +112,16 @@ def build_graph(services: Services, settings: Settings):
             listings=state.properties or [],
             news=state.news_items or [],
             evaluation=state.evaluation,
-            language="es"
+            language="es",
         )
         
-        html = render_html(proposal, state.requirements[0] if state.requirements else None, state.news_items or [])
+        html = render_html(
+            proposal=proposal,
+            requirement=state.requirements[0] if state.requirements else None,
+            news=state.news_items or [],
+            evaluation=state.evaluation,
+            language="es",
+        )
         logger.info("Node seller:done html_len=%s", len(html))
         return {
             "proposals": [proposal],
@@ -124,7 +130,19 @@ def build_graph(services: Services, settings: Settings):
 
     def no_results_node(state: AgentState) -> dict:
         logger.warning("Node no-results:triggered retries=%s", state.retries)
-        return {} 
+        evaluation = EvalResult(
+            score=0.0,
+            threshold=settings.evaluation_threshold,
+            passed=False,
+            reasons=["No viable listings were found after the configured retries."],
+            required_fixes=[
+                "Relajar presupuesto, área, o tipo de propiedad.",
+                "Reducir filtros muy estrictos.",
+            ],
+        )
+        return {
+            "evaluation": evaluation,
+        } 
 
     def retry_node(state: AgentState) -> dict:
         logger.info("Node retry:triggered current_retries=%s", state.retries)
@@ -208,45 +226,222 @@ def build_graph(services: Services, settings: Settings):
 
     return graph.compile()
 
-def render_html(proposal: Proposal, requirement: Requirement | None, news: list[NewsItem]) -> str:
+def _fit_reasons(prop: Property, requirement: Requirement | None, is_spanish: bool) -> list[str]:
+    reasons: list[str] = []
+    if not requirement:
+        return reasons
+    if prop.price <= requirement.price:
+        reasons.append(
+            f"Está dentro del presupuesto (${prop.price:,.0f} <= ${requirement.price:,.0f})."
+            if is_spanish
+            else f"It is within budget (${prop.price:,.0f} <= ${requirement.price:,.0f})."
+        )
+    if prop.bedrooms >= requirement.bedrooms:
+        reasons.append(
+            f"Cumple habitaciones ({prop.bedrooms} vs {requirement.bedrooms} requeridas)."
+            if is_spanish
+            else f"Matches bedrooms ({prop.bedrooms} vs {requirement.bedrooms} requested)."
+        )
+    if prop.bathrooms >= requirement.bathrooms:
+        reasons.append(
+            f"Cumple baños ({prop.bathrooms} vs {requirement.bathrooms} requeridos)."
+            if is_spanish
+            else f"Matches bathrooms ({prop.bathrooms} vs {requirement.bathrooms} requested)."
+        )
+    if prop.area >= requirement.area:
+        reasons.append(
+            f"Tiene buen metraje ({prop.area:.0f} m² vs {requirement.area:.0f} m² objetivo)."
+            if is_spanish
+            else f"Has good area ({prop.area:.0f} m² vs {requirement.area:.0f} m² target)."
+        )
+    if prop.parking_spaces >= requirement.parking_spaces:
+        reasons.append(
+            f"Incluye parqueadero ({prop.parking_spaces})."
+            if is_spanish
+            else f"Includes parking ({prop.parking_spaces})."
+        )
+    return reasons
+
+
+def _tradeoffs(prop: Property, requirement: Requirement | None, is_spanish: bool) -> list[str]:
+    tradeoffs: list[str] = []
+    if not requirement:
+        return tradeoffs
+    if prop.price > requirement.price:
+        over = prop.price - requirement.price
+        tradeoffs.append(
+            f"Supera el presupuesto en ${over:,.0f}."
+            if is_spanish
+            else f"Exceeds budget by ${over:,.0f}."
+        )
+    if prop.bedrooms < requirement.bedrooms:
+        tradeoffs.append(
+            "Tiene menos habitaciones de las solicitadas."
+            if is_spanish
+            else "Has fewer bedrooms than requested."
+        )
+    if prop.bathrooms < requirement.bathrooms:
+        tradeoffs.append(
+            "Tiene menos baños de los solicitados."
+            if is_spanish
+            else "Has fewer bathrooms than requested."
+        )
+    if prop.area < requirement.area:
+        tradeoffs.append(
+            "Metraje por debajo del objetivo."
+            if is_spanish
+            else "Area is below target."
+        )
+    if prop.parking_spaces < requirement.parking_spaces:
+        tradeoffs.append(
+            "Parqueaderos limitados."
+            if is_spanish
+            else "Limited parking spaces."
+        )
+    return tradeoffs
+
+
+def render_html(
+    proposal: Proposal,
+    requirement: Requirement | None,
+    news: list[NewsItem],
+    evaluation: EvalResult | None = None,
+    language: str = "en",
+) -> str:
+    is_spanish = language == "es"
     cards = []
-    for prop in proposal.properties:
+    top_properties = sorted(proposal.properties, key=lambda item: item.score, reverse=True)
+
+    if not proposal.properties and evaluation and not evaluation.passed:
+        fixes = "".join(f"<li>{fix}</li>" for fix in evaluation.required_fixes)
+        cards.append(
+            (
+                "<article class='card'><h3>No se encontraron propiedades</h3>"
+                "<p>La búsqueda actual fue muy estricta. Sugerencias:</p>"
+                f"<ul>{fixes}</ul></article>"
+            )
+            if is_spanish
+            else (
+                "<article class='card'><h3>No properties were found</h3>"
+                "<p>The current search was too restrictive. Suggestions:</p>"
+                f"<ul>{fixes}</ul></article>"
+            )
+        )
+    
+    type_map = {
+        "apartment": "Apartamento",
+        "house": "Casa",
+        "studio": "Apartaestudio",
+        "office": "Oficina",
+        "land": "Lote",
+        "any": "Propiedad"
+    }
+    
+    for idx, prop in enumerate(top_properties, start=1):
+        link_html = (
+            f"<p><a class='listing-link' href='{prop.url}' target='_blank' rel='noreferrer'>"
+            f"{'Ver publicación' if is_spanish else 'Open listing'}</a></p>"
+            if prop.url
+            else ""
+        )
+        es_type = type_map.get(prop.property_type.lower(), "Propiedad")
+        fit_points = _fit_reasons(prop, requirement, is_spanish)
+        tradeoff_points = _tradeoffs(prop, requirement, is_spanish)
+        fit_html = (
+            f"<p><strong>{'Por qué encaja' if is_spanish else 'Why it fits'}:</strong></p><ul>"
+            + "".join(f"<li>{point}</li>" for point in fit_points[:3])
+            + "</ul>"
+            if fit_points
+            else ""
+        )
+        tradeoff_html = (
+            f"<p><strong>{'Tradeoffs' if is_spanish else 'Tradeoffs'}:</strong></p><ul>"
+            + "".join(f"<li>{point}</li>" for point in tradeoff_points[:2])
+            + "</ul>"
+            if tradeoff_points
+            else ""
+        )
         cards.append(
             f"<article class='card'>"
-            f"<h3>{str(prop.property_type).capitalize()} en {prop.location}</h3>"
+            f"<p class='eyebrow'>{'Opción' if is_spanish else 'Option'} #{idx} · score {prop.score:.2f}</p>"
+            f"<h3>{es_type if is_spanish else prop.property_type.title()} {'en' if is_spanish else 'in'} {prop.location}</h3>"
             f"<p class='price'>${prop.price:,.0f}</p>"
+            f"{link_html}"
             f"<ul>"
-            f"<li>Area: {prop.area} m2</li>"
-            f"<li>Habitaciones: {prop.bedrooms}</li>"
-            f"<li>Baños: {prop.bathrooms}</li>"
-            f"<li>Parqueaderos: {prop.parking_spaces}</li>"
+            f"<li>{'Área' if is_spanish else 'Area'}: {prop.area} m²</li>"
+            f"<li>{'Habitaciones' if is_spanish else 'Bedrooms'}: {prop.bedrooms}</li>"
+            f"<li>{'Baños' if is_spanish else 'Bathrooms'}: {prop.bathrooms}</li>"
+            f"<li>{'Parqueaderos' if is_spanish else 'Parking spaces'}: {prop.parking_spaces}</li>"
             f"</ul>"
+            f"{fit_html}"
+            f"{tradeoff_html}"
             f"</article>"
         )
-        
+
     news_html = ""
     if news:
         news_items = "".join(
             f"<li><strong>{item.source}:</strong> {item.text} <br><small>{item.summary}</small></li>"
             for item in news[:5]
         )
-        news_html = f"<section class='panel'><h2>Noticias Relevantes</h2><ul>{news_items}</ul></section>"
-        
+        news_html = (
+            f"<section class='panel'><h2>Noticias relevantes por zona</h2><ul>{news_items}</ul></section>"
+            if is_spanish
+            else f"<section class='panel'><h2>Location news signals</h2><ul>{news_items}</ul></section>"
+        )
+
     req_html = ""
     if requirement:
-        req_html = f"<p>Buscando en: {requirement.location} (Presupuesto: ${requirement.price:,.0f})</p>"
+        req_html = (
+            f"<p>Buscando en: {requirement.location} (Presupuesto: ${requirement.price:,.0f})</p>"
+            if is_spanish
+            else f"<p>Search area: {requirement.location} (Budget: ${requirement.price:,.0f})</p>"
+        )
+
+    eval_html = ""
+    if evaluation:
+        reasons = "".join(f"<li>{reason}</li>" for reason in evaluation.reasons[:4])
+        required_fixes = "".join(f"<li>{fix}</li>" for fix in evaluation.required_fixes[:4])
+        fix_block = (
+            f"<p><strong>{'Ajustes sugeridos' if is_spanish else 'Suggested fixes'}:</strong></p><ul>{required_fixes}</ul>"
+            if required_fixes
+            else ""
+        )
+        eval_html = (
+            f"<section class='panel'><h2>{'Evaluación de la recomendación' if is_spanish else 'Recommendation evaluation'}</h2>"
+            f"<p>{'Puntaje' if is_spanish else 'Score'}: {evaluation.score:.2f} "
+            f"({'>=' if evaluation.passed else '<'} {evaluation.threshold:.2f})</p>"
+            f"<ul>{reasons}</ul>{fix_block}</section>"
+        )
+
+    next_actions = (
+        "<li>Contactar las 2 mejores opciones y validar disponibilidad.</li>"
+        "<li>Agendar visitas priorizando tiempo de desplazamiento y ruido.</li>"
+        "<li>Verificar costos totales: canon, administración y servicios.</li>"
+        if is_spanish
+        else "<li>Contact the top 2 options and confirm availability.</li>"
+        "<li>Schedule visits prioritizing commute time and noise.</li>"
+        "<li>Validate total monthly cost: rent, HOA/admin fee, and utilities.</li>"
+    )
 
     return f"""
     <section class="report">
       <header class="hero">
-        <p class="eyebrow">Propuesta de Niddo</p>
-        <h1>Recomendaciones de Propiedades</h1>
+        <p class="eyebrow">{'Propuesta de Niddo' if is_spanish else 'Niddo proposal'}</p>
+        <h1>{'Recomendaciones de propiedades' if is_spanish else 'Property recommendations'}</h1>
         {req_html}
         <div class="meta">
-          <span>Puntaje de Propuesta: {proposal.score:.2f}</span>
+          <span>{'Puntaje de propuesta' if is_spanish else 'Proposal score'}: {proposal.score:.2f}</span>
+          <span>{'Propiedades evaluadas' if is_spanish else 'Evaluated properties'}: {len(top_properties)}</span>
+          <span>{'Señales de noticias' if is_spanish else 'News signals'}: {len(news)}</span>
         </div>
       </header>
       <section class="cards">{''.join(cards)}</section>
+      {eval_html}
       {news_html}
+      <section class='panel'>
+        <h2>{'Próximos pasos' if is_spanish else 'Next actions'}</h2>
+        <ul>{next_actions}</ul>
+      </section>
     </section>
     """

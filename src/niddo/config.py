@@ -23,6 +23,8 @@ class Settings(BaseModel):
     enable_news_agent: bool = True
     news_results_limit: int = 5
     enable_whatsapp_agent: bool = False
+    workflow_timeout_s: int = 180
+    content_language: str = "es"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -80,4 +82,6 @@ settings = Settings(
     enable_news_agent=_env_bool("NIDDO_ENABLE_NEWS_AGENT", True),
     news_results_limit=int(os.getenv("NIDDO_NEWS_RESULTS_LIMIT", "5")),
     enable_whatsapp_agent=_env_bool("NIDDO_ENABLE_WHATSAPP_AGENT", False),
+    workflow_timeout_s=int(os.getenv("NIDDO_WORKFLOW_TIMEOUT_S", "180")),
+    content_language=os.getenv("NIDDO_CONTENT_LANGUAGE", "es").lower(),
 )

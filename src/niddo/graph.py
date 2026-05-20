@@ -112,7 +112,7 @@ def build_graph(services: Services, settings: Settings):
             listings=state.properties or [],
             news=state.news_items or [],
             evaluation=state.evaluation,
-            language="es",
+            language=state.language,
         )
         
         html = render_html(
@@ -120,7 +120,7 @@ def build_graph(services: Services, settings: Settings):
             requirement=state.requirements[0] if state.requirements else None,
             news=state.news_items or [],
             evaluation=state.evaluation,
-            language="es",
+            language=state.language,
         )
         logger.info("Node seller:done html_len=%s", len(html))
         return {
@@ -301,6 +301,21 @@ def _tradeoffs(prop: Property, requirement: Requirement | None, is_spanish: bool
     return tradeoffs
 
 
+def _to_spanish_line(line: str) -> str:
+    replacements = [
+        ("Budget fit", "Ajuste al presupuesto"),
+        ("No viable listings were found after the configured retries.", "No se encontraron opciones viables después de los reintentos configurados."),
+        ("No results", "Sin resultados"),
+        ("Need more options", "Se necesitan más opciones"),
+        ("Raise budget", "Subir presupuesto"),
+    ]
+    normalized = line.strip()
+    for source, target in replacements:
+        if normalized == source:
+            return target
+    return normalized
+
+
 def render_html(
     proposal: Proposal,
     requirement: Requirement | None,
@@ -355,7 +370,7 @@ def render_html(
             else ""
         )
         tradeoff_html = (
-            f"<p><strong>{'Tradeoffs' if is_spanish else 'Tradeoffs'}:</strong></p><ul>"
+            f"<p><strong>{'Aspectos a revisar' if is_spanish else 'Tradeoffs'}:</strong></p><ul>"
             + "".join(f"<li>{point}</li>" for point in tradeoff_points[:2])
             + "</ul>"
             if tradeoff_points
@@ -363,15 +378,19 @@ def render_html(
         )
         cards.append(
             f"<article class='card'>"
-            f"<p class='eyebrow'>{'Opción' if is_spanish else 'Option'} #{idx} · score {prop.score:.2f}</p>"
+            f"<p class='eyebrow'>{'Opción' if is_spanish else 'Option'} #{idx} · {'puntaje' if is_spanish else 'score'} {prop.score:.2f}</p>"
             f"<h3>{es_type if is_spanish else prop.property_type.title()} {'en' if is_spanish else 'in'} {prop.location}</h3>"
             f"<p class='price'>${prop.price:,.0f}</p>"
             f"{link_html}"
             f"<ul>"
             f"<li>{'Área' if is_spanish else 'Area'}: {prop.area} m²</li>"
+            f"{f'<li>Área privada: {prop.private_area:.0f} m²</li>' if prop.private_area else ''}"
             f"<li>{'Habitaciones' if is_spanish else 'Bedrooms'}: {prop.bedrooms}</li>"
             f"<li>{'Baños' if is_spanish else 'Bathrooms'}: {prop.bathrooms}</li>"
             f"<li>{'Parqueaderos' if is_spanish else 'Parking spaces'}: {prop.parking_spaces}</li>"
+            f"{f'<li>Estado: {prop.status}</li>' if prop.status else ''}"
+            f"{f'<li>Antigüedad: {prop.age_text}</li>' if prop.age_text else ''}"
+            f"{f'<li>Estrato: {prop.estrato}</li>' if prop.estrato else ''}"
             f"</ul>"
             f"{fit_html}"
             f"{tradeoff_html}"
@@ -400,8 +419,12 @@ def render_html(
 
     eval_html = ""
     if evaluation:
-        reasons = "".join(f"<li>{reason}</li>" for reason in evaluation.reasons[:4])
-        required_fixes = "".join(f"<li>{fix}</li>" for fix in evaluation.required_fixes[:4])
+        if is_spanish:
+            reasons = "".join(f"<li>{_to_spanish_line(reason)}</li>" for reason in evaluation.reasons[:4])
+            required_fixes = "".join(f"<li>{_to_spanish_line(fix)}</li>" for fix in evaluation.required_fixes[:4])
+        else:
+            reasons = "".join(f"<li>{reason}</li>" for reason in evaluation.reasons[:4])
+            required_fixes = "".join(f"<li>{fix}</li>" for fix in evaluation.required_fixes[:4])
         fix_block = (
             f"<p><strong>{'Ajustes sugeridos' if is_spanish else 'Suggested fixes'}:</strong></p><ul>{required_fixes}</ul>"
             if required_fixes
@@ -418,10 +441,6 @@ def render_html(
         "<li>Contactar las 2 mejores opciones y validar disponibilidad.</li>"
         "<li>Agendar visitas priorizando tiempo de desplazamiento y ruido.</li>"
         "<li>Verificar costos totales: canon, administración y servicios.</li>"
-        if is_spanish
-        else "<li>Contact the top 2 options and confirm availability.</li>"
-        "<li>Schedule visits prioritizing commute time and noise.</li>"
-        "<li>Validate total monthly cost: rent, HOA/admin fee, and utilities.</li>"
     )
 
     return f"""

@@ -599,14 +599,26 @@
       </section>
     </main>
     <script>
-      const form = document.getElementById("search-form");
-      const shell = document.getElementById("loading-shell");
-      const status = document.getElementById("loading-status");
-      const button = document.getElementById("submit-button");
-      const steps = {{ ui.steps | safe }};
+      (function () {
+        const form = document.getElementById("search-form");
+        const shell = document.getElementById("loading-shell");
+        const status = document.getElementById("loading-status");
+        const button = document.getElementById("submit-button");
 
-      if (form && shell && status && button) {
-        form.addEventListener("submit", () => {
+        let steps = [];
+        try {
+          steps = {{ ui.steps | safe }};
+        } catch (_error) {
+          steps = [];
+        }
+        if (!Array.isArray(steps) || steps.length === 0) {
+          steps = ["Analizando la solicitud...", "Buscando inmuebles...", "Armando el reporte final..."];
+        }
+
+        function showLoading() {
+          if (!shell || !status || !button) {
+            return;
+          }
           shell.classList.add("is-visible");
           shell.setAttribute("aria-hidden", "false");
           button.disabled = true;
@@ -614,13 +626,22 @@
 
           let index = 0;
           status.textContent = steps[index];
-
+          window.clearInterval(window.loadingInterval);
           window.loadingInterval = window.setInterval(() => {
             index = (index + 1) % steps.length;
             status.textContent = steps[index];
           }, 1800);
-        });
-      }
+
+          window.clearTimeout(window.loadingSlowTimeout);
+          window.loadingSlowTimeout = window.setTimeout(() => {
+            status.textContent = "{{ ui.loading_slow }}";
+          }, 45000);
+        }
+
+        if (form) {
+          form.addEventListener("submit", showLoading, { capture: true });
+        }
+      })();
     </script>
   </body>
 </html>

@@ -156,11 +156,15 @@ class Property(BaseModel):
     location: str
     price: int
     area: float
+    private_area: float | None = None
     bedrooms: int
     parking_spaces: int
     admin_fee: int
     bathrooms: int
     property_type: str
+    status: str | None = None
+    age_text: str | None = None
+    estrato: int | None = None
     score: float
     url: str | None = None
 

@@ -153,24 +153,89 @@ class PlaywrightListingClient:
         score = self._score_listing(price, location_str, request)
         
         # Fallback regex extraction for missing JSON-LD data
+        facts = self._extract_property_facts(raw_text)
         bedrooms = self._extract_int(best, ("numberOfRooms", "numberOfBedrooms", "bedrooms")) or self._extract_regex_int(r"(\d+)\s*(hab|alcoba|dormitorio)", raw_text) or 0
         bathrooms = self._extract_int(best, ("numberOfBathroomsTotal", "bathrooms")) or self._extract_regex_int(r"(\d+)\s*baño", raw_text) or 0
-        area = float(self._extract_area(best) or self._extract_regex_float(r"([\d\.,]+)\s*m", raw_text) or 0.0)
+        area = self._extract_area_value(best, raw_text, result.title)
+        private_area = facts.get("private_area_m2")
         parking = self._extract_regex_int(r"(\d+)\s*(parqueadero|garaje)", raw_text) or 0
         admin_fee = self._extract_regex_int(r"(?:admin|administración).*?\$?\s?([\d\.\,]{4,})", raw_text) or 0
         
         return Property(
             location=location_str,
             price=int(price),
-            area=area,
+            area=float(area),
+            private_area=float(private_area) if private_area else None,
             bedrooms=bedrooms,
             parking_spaces=parking,
             admin_fee=admin_fee,
             bathrooms=bathrooms,
             property_type=property_type,
+            status=facts.get("status"),
+            age_text=facts.get("age_text"),
+            estrato=facts.get("estrato"),
             score=score,
             url=result.url
         )
+
+    def _extract_property_facts(self, raw_text: str) -> dict[str, Any]:
+        facts: dict[str, Any] = {}
+        status = self._extract_regex_text(r"estado\s*[:\-]?\s*([a-záéíóúñ ]{3,30})", raw_text)
+        if status:
+            facts["status"] = status.title()
+
+        age_text = self._extract_regex_text(
+            r"antig[üu]edad\s*[:\-]?\s*([0-9]+\s*(?:a|hasta)\s*[0-9]+\s*años|[0-9]+\s*años?)",
+            raw_text,
+        )
+        if age_text:
+            facts["age_text"] = age_text
+
+        estrato = self._extract_regex_int(r"estrato\s*[:\-]?\s*([1-9])", raw_text)
+        if estrato:
+            facts["estrato"] = estrato
+
+        private_area = self._extract_regex_float(
+            r"(?:área|area)\s*privada\s*[:\-]?\s*([\d\.,]+)\s*m(?:2|²)?",
+            raw_text,
+        )
+        if private_area and private_area > 0:
+            facts["private_area_m2"] = float(private_area)
+        return facts
+
+    def _extract_area_value(self, data: dict[str, Any], raw_text: str, title: str) -> float:
+        structured_area = self._extract_area(data)
+        if structured_area and structured_area > 0:
+            return float(structured_area)
+
+        area_patterns = (
+            r"([\d\.,]+)\s*m(?:2|²)\b",
+            r"area\s*(?:de)?\s*([\d\.,]+)",
+            r"metraje\s*(?:de)?\s*([\d\.,]+)",
+            r"([\d\.,]+)\s*metros?\s*cuadrados",
+        )
+        for pattern in area_patterns:
+            parsed = self._extract_regex_float(pattern, raw_text)
+            if parsed and parsed > 0:
+                return float(parsed)
+
+        title_area = self._extract_regex_float(r"([\d\.,]+)\s*m(?:2|²)\b", title)
+        if title_area and title_area > 0:
+            return float(title_area)
+
+        return 0.0
+
+    def _extract_regex_text(self, pattern: str, text: str) -> str | None:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            return None
+        value = re.sub(r"\s+", " ", match.group(1)).strip()
+        if not value:
+            return None
+        blocked = {"preguntale", "pregúntele", "preguntale!"}
+        if value.lower() in blocked:
+            return None
+        return value
 
     def _extract_structured_candidates(self, html: str) -> list[dict[str, Any]]:
         if BeautifulSoup is None: return []

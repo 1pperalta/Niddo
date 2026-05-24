@@ -36,6 +36,13 @@ class SearchResult:
     title: str
     url: str
 
+
+def _normalize_text(value: str | None) -> str:
+    if not value:
+        return ""
+    normalized = unicodedata.normalize("NFKD", value)
+    return normalized.encode("ascii", "ignore").decode("ascii").strip().lower()
+
 class PlaywrightListingClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -150,8 +157,6 @@ class PlaywrightListingClient:
         
         property_type = self._normalize_property_type(self._coalesce(best.get("@type"), best.get("category"), request.property_type))
         
-        score = self._score_listing(price, location_str, request)
-        
         # Fallback regex extraction for missing JSON-LD data
         facts = self._extract_property_facts(raw_text)
         bedrooms = self._extract_int(best, ("numberOfRooms", "numberOfBedrooms", "bedrooms")) or self._extract_regex_int(r"(\d+)\s*(hab|alcoba|dormitorio)", raw_text) or 0
@@ -160,6 +165,16 @@ class PlaywrightListingClient:
         private_area = facts.get("private_area_m2")
         parking = self._extract_regex_int(r"(\d+)\s*(parqueadero|garaje)", raw_text) or 0
         admin_fee = self._extract_regex_int(r"(?:admin|administración).*?\$?\s?([\d\.\,]{4,})", raw_text) or 0
+        score = self._score_listing(
+            request=request,
+            price=price,
+            location=location_str,
+            bedrooms=bedrooms,
+            bathrooms=bathrooms,
+            area=area,
+            parking_spaces=parking,
+            property_type=property_type,
+        )
         
         return Property(
             location=location_str,
@@ -327,13 +342,66 @@ class PlaywrightListingClient:
         if "studio" in lowered or "apartaestudio" in lowered: return "studio"
         return "apartment"
 
-    def _score_listing(self, price: float, location: str, request: Requirement) -> float:
-        score = 0.2
-        req_loc = request.location.lower()
-        if req_loc in location.lower():
-            score += 0.4
-        if request.price:
-            score += max(0.0, 0.4 - abs(price - request.price) / request.price)
+    def _score_listing(
+        self,
+        *,
+        request: Requirement,
+        price: float,
+        location: str,
+        bedrooms: int,
+        bathrooms: int,
+        area: float,
+        parking_spaces: int,
+        property_type: str,
+    ) -> float:
+        active: list[tuple[str, float]] = []
+        if request.price > 0:
+            active.append(("price", 0.5))
+        if request.location.strip():
+            active.append(("location", 0.2))
+        if request.bedrooms > 0:
+            active.append(("bedrooms", 0.1))
+        if request.bathrooms > 0:
+            active.append(("bathrooms", 0.08))
+        if request.area > 0:
+            active.append(("area", 0.07))
+        if request.parking_spaces > 0:
+            active.append(("parking_spaces", 0.03))
+        if request.property_type.strip() and request.property_type.lower() != "any":
+            active.append(("property_type", 0.02))
+
+        if not active:
+            return 0.0
+
+        total_weight = sum(weight for _, weight in active)
+        weights = {name: weight / total_weight for name, weight in active}
+
+        price_fit = 0.0
+        if request.price > 0:
+            price_fit = max(0.0, 1.0 - abs(price - request.price) / request.price)
+        location_fit = 1.0 if _normalize_text(request.location) in _normalize_text(location) else 0.0
+        bedrooms_fit = min(1.0, bedrooms / max(1, request.bedrooms)) if request.bedrooms > 0 else 0.0
+        bathrooms_fit = min(1.0, bathrooms / max(1, request.bathrooms)) if request.bathrooms > 0 else 0.0
+        area_fit = min(1.0, area / request.area) if request.area > 0 else 0.0
+        parking_fit = min(1.0, parking_spaces / max(1, request.parking_spaces)) if request.parking_spaces > 0 else 0.0
+        type_fit = (
+            1.0
+            if request.property_type.strip()
+            and request.property_type.lower() != "any"
+            and self._normalize_property_type(request.property_type) == property_type
+            else 0.0
+        )
+
+        criterion_scores = {
+            "price": price_fit,
+            "location": location_fit,
+            "bedrooms": bedrooms_fit,
+            "bathrooms": bathrooms_fit,
+            "area": area_fit,
+            "parking_spaces": parking_fit,
+            "property_type": type_fit,
+        }
+        score = sum(weights[key] * criterion_scores[key] for key in weights)
         return round(score, 3)
 
     def _normalize_url(self, url: str) -> str:

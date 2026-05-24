@@ -363,7 +363,7 @@ class TavilyNewsService(NewsService):
     def _fetch_single_query(self, query: str) -> list[NewsItem]:
         payload = {
             "api_key": self.api_key,
-            "query": query,
+            "query": f"{query} en Colombia en español",
             "topic": "news",
             "search_depth": "basic",
             "time_range": "month",
@@ -405,6 +405,8 @@ class TavilyNewsService(NewsService):
             
             if not title or not summary:
                 continue
+            if not self._is_likely_spanish(f"{title} {summary}"):
+                continue
                 
             news_items.append(
                 NewsItem(
@@ -414,6 +416,17 @@ class TavilyNewsService(NewsService):
                 )
             )
         return news_items
+
+    def _is_likely_spanish(self, text: str) -> bool:
+        lowered = normalize_text(text)
+        if not lowered:
+            return False
+        markers = (
+            " de ", " la ", " en ", " y ", " para ", " con ", " que ", " del ", " los ", " las ",
+            " bogota", " medellin", " colombia", " movilidad", " seguridad", " barrio",
+        )
+        count = sum(1 for marker in markers if marker in f" {lowered} ")
+        return count >= 2
 
     def _fallback(self, request: Requirement, listings: list[Property]) -> list[NewsItem]:
         if self.fallback is None:

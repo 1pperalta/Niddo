@@ -437,12 +437,6 @@ def render_html(
             f"<ul>{reasons}</ul>{fix_block}</section>"
         )
 
-    next_actions = (
-        "<li>Contactar las 2 mejores opciones y validar disponibilidad.</li>"
-        "<li>Agendar visitas priorizando tiempo de desplazamiento y ruido.</li>"
-        "<li>Verificar costos totales: canon, administración y servicios.</li>"
-    )
-
     return f"""
     <section class="report">
       <header class="hero">
@@ -458,9 +452,5 @@ def render_html(
       <section class="cards">{''.join(cards)}</section>
       {eval_html}
       {news_html}
-      <section class='panel'>
-        <h2>{'Próximos pasos' if is_spanish else 'Next actions'}</h2>
-        <ul>{next_actions}</ul>
-      </section>
     </section>
     """

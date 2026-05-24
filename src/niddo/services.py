@@ -164,7 +164,10 @@ class OpenAIWorkflowService(IntakeService, EvaluationService, SellerService):
             schema=RequirementList,
             system_prompt=(
                 "Extract real-estate search requirements into the provided schema. "
-                "Prefer explicit values from the user."
+                "Prefer explicit values from the user. "
+                "For the legacy Requirement.location field, preserve neighborhood intent. "
+                "If both city and neighborhood are present, write it as 'Neighborhood, City'. "
+                "If the user only names a neighborhood and the city is clear from context, include both."
             ),
             user_content=raw_text,
         )

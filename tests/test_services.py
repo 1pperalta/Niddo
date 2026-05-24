@@ -46,6 +46,25 @@ def test_tavily_neighborhood_helpers_use_request_and_listings():
     assert all("en español" in query for query in queries)
 
 
+def test_news_scope_detects_neighborhood_when_location_is_reversed():
+    service = TavilyNewsService(settings=SimpleNamespace(tavily_api_key=None, news_results_limit=5))
+    request = Requirement(
+        location="Bogota, Chapinero",
+        price=3000000,
+        area=60,
+        bedrooms=2,
+        parking_spaces=0,
+        admin_fee=0,
+        bathrooms=1,
+        property_type="apartment",
+    )
+
+    scopes = service._candidate_news_scopes(request, [])
+
+    assert ("ciudad", "Bogota") in scopes
+    assert ("barrio", "Chapinero, Bogota") in scopes
+
+
 def test_tavily_build_insights_keeps_spanish_news_only():
     service = TavilyNewsService(settings=SimpleNamespace(tavily_api_key=None, news_results_limit=5))
     response = {

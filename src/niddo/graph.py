@@ -9,6 +9,18 @@ from niddo.models import AgentState, Requirement, Property, NewsItem, Proposal, 
 from niddo.services import Services
 
 logger = logging.getLogger("niddo.graph")
+KNOWN_NEIGHBORHOOD_CITIES = {
+    "chapinero": "bogota",
+    "teusaquillo": "bogota",
+    "usaquen": "bogota",
+    "cedritos": "bogota",
+    "chico": "bogota",
+    "rosales": "bogota",
+    "laureles": "medellin",
+    "poblado": "medellin",
+    "el poblado": "medellin",
+    "belen": "medellin",
+}
 
 
 def build_graph(services: Services, settings: Settings):
@@ -29,7 +41,11 @@ def build_graph(services: Services, settings: Settings):
         run_news = False
         if state.requirements:
             location = state.requirements[0].location.lower()
-            if "bogota" in location or "medellin" in location:
+            if (
+                "bogota" in location
+                or "medellin" in location
+                or any(neighborhood in location for neighborhood in KNOWN_NEIGHBORHOOD_CITIES)
+            ):
                 run_news = True
         logger.info("Node coordinator:done run_news=%s retries=%s", run_news, state.retries)
         return {

@@ -30,6 +30,34 @@ logger = logging.getLogger("niddo.listing_sources")
 
 FINCA_RAIZ_BASE_URL = "https://www.fincaraiz.com.co"
 DEBUG_DIR = Path("debug")
+KNOWN_CITY_SLUGS = {
+    "bogota": "bogota-dc",
+    "bogota dc": "bogota-dc",
+    "medellin": "antioquia",
+    "envigado": "antioquia",
+    "sabaneta": "antioquia",
+    "cali": "valle-del-cauca",
+    "barranquilla": "atlantico",
+    "cartagena": "bolivar",
+}
+KNOWN_NEIGHBORHOOD_CITY = {
+    "chapinero": "bogota",
+    "teusaquillo": "bogota",
+    "usaquen": "bogota",
+    "cedritos": "bogota",
+    "chico": "bogota",
+    "rosales": "bogota",
+    "laureles": "medellin",
+    "poblado": "medellin",
+    "el poblado": "medellin",
+    "belen": "medellin",
+}
+FINCARAIZ_NEIGHBORHOOD_ZONE = {
+    ("laureles", "medellin"): "occidente",
+    ("belen", "medellin"): "occidente",
+    ("poblado", "medellin"): "suroriente",
+    ("el poblado", "medellin"): "suroriente",
+}
 
 @dataclass(slots=True)
 class SearchResult:
@@ -96,15 +124,50 @@ class PlaywrightListingClient:
         return properties[: self.settings.search_results_limit]
 
     def _search_results(self, page: Page, request: Requirement) -> list[SearchResult]:
-        results_url = self._direct_results_url(request)
-        logger.info("FincaRaiz direct results url=%s", results_url)
-        try:
-            page.goto(results_url, wait_until="domcontentloaded")
-            page.wait_for_timeout(2500)
-        except PlaywrightError:
-            logger.exception("FincaRaiz direct results page failed")
-            return []
+        for results_url in self._direct_results_urls(request):
+            logger.info("FincaRaiz direct results url=%s", results_url)
+            try:
+                page.goto(results_url, wait_until="domcontentloaded")
+                page.wait_for_timeout(2500)
+            except PlaywrightError:
+                logger.exception("FincaRaiz direct results page failed for %s", results_url)
+                continue
 
+            results = self._extract_search_result_links(page)
+            if results:
+                return results
+        return []
+
+    def _direct_results_url(self, request: Requirement) -> str:
+        return self._direct_results_urls(request)[0]
+
+    def _direct_results_urls(self, request: Requirement) -> list[str]:
+        intent = "arriendo"
+        property_slug = self._property_results_slug(request.property_type)
+        search_area, city = self._search_area_and_city(request.location)
+        area_slug = self._slugify(search_area)
+        city_slug = self._slugify(city or search_area)
+        region_slug = self._region_slug(city or request.location or "")
+        zone_slug = self._neighborhood_zone_slug(search_area, city)
+
+        paths = []
+        if zone_slug and city_slug != area_slug:
+            paths.append(f"{intent}/{property_slug}/{area_slug}/{zone_slug}/{city_slug}")
+            paths.append(f"{intent}/{property_slug}/{area_slug}-{zone_slug}/{city_slug}")
+        paths.append(f"{intent}/{property_slug}/{area_slug}/{region_slug}")
+        if city_slug != area_slug:
+            paths.append(f"{intent}/{property_slug}/{city_slug}/{region_slug}")
+
+        urls = []
+        seen = set()
+        for path in paths:
+            url = f"{FINCA_RAIZ_BASE_URL}/{path}"
+            if url not in seen:
+                urls.append(url)
+                seen.add(url)
+        return urls
+
+    def _extract_search_result_links(self, page: Page) -> list[SearchResult]:
         results: list[SearchResult] = []
         seen: set[str] = set()
         anchors = page.locator(
@@ -129,13 +192,6 @@ class PlaywrightListingClient:
             if len(results) >= self.settings.search_results_limit * 3:
                 break
         return results
-
-    def _direct_results_url(self, request: Requirement) -> str:
-        intent = "arriendo"
-        property_slug = self._property_results_slug(request.property_type)
-        city_slug = self._slugify(request.location.split(',')[0] if request.location else "bogota")
-        region_slug = self._region_slug(request.location or "")
-        return f"{FINCA_RAIZ_BASE_URL}/{intent}/{property_slug}/{city_slug}/{region_slug}"
 
     def _extract_listing(self, page: Page, result: SearchResult, request: Requirement) -> Property | None:
         html = page.content()
@@ -379,7 +435,7 @@ class PlaywrightListingClient:
         price_fit = 0.0
         if request.price > 0:
             price_fit = max(0.0, 1.0 - abs(price - request.price) / request.price)
-        location_fit = 1.0 if _normalize_text(request.location) in _normalize_text(location) else 0.0
+        location_fit = self._location_fit(request.location, location)
         bedrooms_fit = min(1.0, bedrooms / max(1, request.bedrooms)) if request.bedrooms > 0 else 0.0
         bathrooms_fit = min(1.0, bathrooms / max(1, request.bathrooms)) if request.bathrooms > 0 else 0.0
         area_fit = min(1.0, area / request.area) if request.area > 0 else 0.0
@@ -439,11 +495,53 @@ class PlaywrightListingClient:
         return mapping.get(property_type.lower(), "apartamentos")
 
     def _region_slug(self, location: str) -> str:
-        normalized = self._slugify(location)
-        if "bogota" in normalized: return "bogota-dc"
-        if "medellin" in normalized or "envigado" in normalized or "sabaneta" in normalized: return "antioquia"
-        if "cali" in normalized: return "valle-del-cauca"
+        normalized = _normalize_text(location).replace("-", " ")
+        for city, region in KNOWN_CITY_SLUGS.items():
+            if city in normalized:
+                return region
         return "colombia"
+
+    def _search_area_and_city(self, location: str) -> tuple[str, str]:
+        parts = [part.strip() for part in location.split(",") if part.strip()]
+        if not parts:
+            return "bogota", "bogota"
+
+        if len(parts) == 1:
+            normalized = _normalize_text(parts[0])
+            inferred_city = KNOWN_NEIGHBORHOOD_CITY.get(normalized)
+            return parts[0], inferred_city or parts[0]
+
+        first, second = parts[0], parts[1]
+        first_norm = _normalize_text(first)
+        second_norm = _normalize_text(second)
+        first_is_city = first_norm in KNOWN_CITY_SLUGS
+        second_is_city = second_norm in KNOWN_CITY_SLUGS
+
+        if first_is_city and not second_is_city:
+            return second, first
+        if second_is_city:
+            return first, second
+        inferred_city = KNOWN_NEIGHBORHOOD_CITY.get(first_norm) or KNOWN_NEIGHBORHOOD_CITY.get(second_norm)
+        return first, inferred_city or second
+
+    def _neighborhood_zone_slug(self, search_area: str, city: str) -> str | None:
+        key = (_normalize_text(search_area), _normalize_text(city))
+        zone = FINCARAIZ_NEIGHBORHOOD_ZONE.get(key)
+        return self._slugify(zone) if zone else None
+
+    def _location_fit(self, requested: str, actual: str) -> float:
+        requested_parts = [_normalize_text(part) for part in requested.split(",") if part.strip()]
+        actual_norm = _normalize_text(actual)
+        if not requested_parts or not actual_norm:
+            return 0.0
+        matches = sum(1 for part in requested_parts if part and part in actual_norm)
+        if matches:
+            return matches / len(requested_parts)
+        requested_tokens = {token for part in requested_parts for token in part.split() if len(token) > 2}
+        actual_tokens = {token for token in actual_norm.split() if len(token) > 2}
+        if not requested_tokens:
+            return 0.0
+        return len(requested_tokens & actual_tokens) / len(requested_tokens)
 
     def _slugify(self, value: str) -> str:
         normalized = unicodedata.normalize("NFKD", value)

@@ -6,7 +6,7 @@ import json
 import logging
 import unicodedata
 from dataclasses import dataclass
-from typing import Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 from urllib.error import HTTPError, URLError
 from urllib.request import Request as UrlRequest
 from urllib.request import urlopen
@@ -17,6 +17,11 @@ from pydantic import BaseModel
 from niddo.config import Settings
 from niddo.listing_sources import PlaywrightListingClient
 from niddo.models import EvalResult, Requirement, Property, NewsItem, Proposal, RequirementList
+
+try:
+    from duckduckgo_search import DDGS
+except Exception:
+    DDGS = None
 
 logger = logging.getLogger("niddo.services")
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -200,7 +205,8 @@ class OpenAIWorkflowService(IntakeService, EvaluationService, SellerService):
             model=self.settings.quality_model,
             schema=EvalResult,
             system_prompt=(
-                "Evaluate whether the candidate properties fit the request."
+                "Evaluate whether the candidate properties fit the request. "
+                "Write every reason and required fix in Spanish."
             ),
             user_content=(
                 f"Threshold: {threshold}\n"
@@ -322,21 +328,23 @@ class TavilyNewsService(NewsService):
         ]
 
     def search(self, request: Requirement, listings: list[Property]) -> list[NewsItem]:
-        if not self.api_key:
-            logger.warning("Tavily skipped (no API key). Using fallback.")
-            return self._fallback(request, listings)
-
-        locations = self._candidate_locations(request, listings)
-        focus = ", ".join(locations) if locations else "Colombia"
+        scopes = self._candidate_news_scopes(request, listings)
+        queries = self._build_queries(scopes)
         
-        queries = [f"{focus} {topic}" for topic in self.topics]
-        
-        logger.info("Tavily composite search:start locations=%s topics=%s", locations, len(queries))
+        logger.info("Tavily composite search:start scopes=%s queries=%s", scopes, len(queries))
         
         all_news_items = []
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(queries)) as executor:
-            future_to_query = {executor.submit(self._fetch_single_query, query): query for query in queries}
+
+        search_jobs = []
+        if self.api_key:
+            search_jobs.extend((self._fetch_single_query, query) for query in queries)
+        else:
+            logger.warning("Tavily skipped (no API key). Trying DuckDuckGo news.")
+
+        search_jobs.extend((self._fetch_duckduckgo_query, query) for query in queries[: min(8, len(queries))])
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(8, len(search_jobs)))) as executor:
+            future_to_query = {executor.submit(fetcher, query): query for fetcher, query in search_jobs}
             for future in concurrent.futures.as_completed(future_to_query):
                 query = future_to_query[future]
                 try:
@@ -351,9 +359,10 @@ class TavilyNewsService(NewsService):
         seen_titles = set()
         unique_items = []
         for item in all_news_items:
-            if item.text not in seen_titles:
+            normalized_title = normalize_text(item.text)
+            if normalized_title not in seen_titles:
                 unique_items.append(item)
-                seen_titles.add(item.text)
+                seen_titles.add(normalized_title)
                 
         if unique_items:
             return unique_items[:self.settings.news_results_limit * len(self.topics)]
@@ -363,7 +372,7 @@ class TavilyNewsService(NewsService):
     def _fetch_single_query(self, query: str) -> list[NewsItem]:
         payload = {
             "api_key": self.api_key,
-            "query": f"{query} en Colombia en español",
+            "query": query,
             "topic": "news",
             "search_depth": "basic",
             "time_range": "month",
@@ -372,6 +381,41 @@ class TavilyNewsService(NewsService):
         }
         response = self._post_search(payload)
         return self._build_insights(response)
+
+    def _fetch_duckduckgo_query(self, query: str) -> list[NewsItem]:
+        if DDGS is None:
+            logger.warning("DuckDuckGo news skipped (duckduckgo_search is not available).")
+            return []
+        try:
+            with DDGS() as ddgs:
+                results = list(
+                    ddgs.news(
+                        query,
+                        region="co-es",
+                        safesearch="moderate",
+                        timelimit="m",
+                        max_results=max(1, self.settings.news_results_limit),
+                    )
+                )
+        except Exception as exc:
+            logger.warning("DuckDuckGo news query failed: %s", exc)
+            return []
+        return self._build_duckduckgo_insights(results)
+
+    def _build_duckduckgo_insights(self, results: list[dict[str, Any]]) -> list[NewsItem]:
+        news_items = []
+        for item in results:
+            title = str(item.get("title") or "").strip()
+            summary = str(item.get("body") or item.get("snippet") or "").strip()
+            source = str(item.get("source") or "DuckDuckGo").strip()
+            if not title or not summary:
+                continue
+            title = self._spanish_news_text(title)
+            summary = self._spanish_news_text(summary)
+            if not title or not summary:
+                continue
+            news_items.append(NewsItem(source=source, text=title, summary=summary[:420]))
+        return news_items
 
     def _post_search(self, payload: dict) -> dict:
         body = json.dumps(payload).encode("utf-8")
@@ -395,6 +439,79 @@ class TavilyNewsService(NewsService):
                 
         return candidates[:3] 
 
+    def _candidate_news_scopes(self, request: Any, listings: list[Any]) -> list[tuple[str, str]]:
+        raw_locations: list[str] = []
+        request_location = getattr(request, "location", None)
+        if isinstance(request_location, str):
+            raw_locations.append(request_location)
+        elif request_location is not None:
+            city = getattr(request_location, "city", None)
+            neighborhood = getattr(request_location, "neighborhood", None)
+            if city:
+                raw_locations.append(str(city))
+            if neighborhood:
+                raw_locations.append(f"{neighborhood}, {city}" if city else str(neighborhood))
+
+        for listing in listings:
+            listing_location = getattr(listing, "location", None)
+            if isinstance(listing_location, str):
+                raw_locations.append(listing_location)
+            elif listing_location is not None:
+                city = getattr(listing_location, "city", None)
+                neighborhood = getattr(listing_location, "neighborhood", None)
+                if city:
+                    raw_locations.append(str(city))
+                if neighborhood:
+                    raw_locations.append(f"{neighborhood}, {city}" if city else str(neighborhood))
+
+        scopes: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for raw_location in raw_locations:
+            for scope in self._scopes_from_location(raw_location):
+                key = (scope[0], normalize_text(scope[1]))
+                if key not in seen:
+                    scopes.append(scope)
+                    seen.add(key)
+
+        return scopes[:6] or [("ciudad", "Colombia")]
+
+    def _scopes_from_location(self, location: str) -> list[tuple[str, str]]:
+        parts = [part.strip() for part in location.split(",") if part.strip()]
+        if not parts:
+            return []
+        if len(parts) == 1:
+            return [("ciudad", parts[0])]
+
+        first, second = parts[0], parts[1]
+        known_cities = {"bogota", "bogota dc", "medellin", "cali", "barranquilla", "cartagena"}
+        first_is_city = normalize_text(first) in known_cities
+        city = first if first_is_city else second
+        neighborhood = second if first_is_city else first
+        return [("ciudad", city), ("barrio", f"{neighborhood}, {city}")]
+
+    def _build_queries(self, scopes: list[tuple[str, str]]) -> list[str]:
+        queries = []
+        for scope, location in scopes:
+            prefix = (
+                f"noticias recientes en español sobre la ciudad de {location}"
+                if scope == "ciudad"
+                else f"noticias recientes en español sobre el barrio o zona {location}"
+            )
+            queries.extend(f"{prefix}: {topic}" for topic in self.topics)
+        return queries
+
+    def _candidate_neighborhoods(self, request: Any, listings: list[Any]) -> list[str]:
+        neighborhoods = []
+        for scope, location in self._candidate_news_scopes(request, listings):
+            if scope == "barrio":
+                neighborhoods.append(location.split(",", 1)[0].strip())
+        return neighborhoods
+
+    def _build_query(self, request: Any, neighborhoods: list[str]) -> str:
+        scopes = self._candidate_news_scopes(request, [])
+        scopes.extend(("barrio", neighborhood) for neighborhood in neighborhoods)
+        return self._build_queries(scopes)[0]
+
     def _build_insights(self, response: dict) -> list[NewsItem]:
         results = response.get("results", [])
         news_items = []
@@ -405,7 +522,9 @@ class TavilyNewsService(NewsService):
             
             if not title or not summary:
                 continue
-            if not self._is_likely_spanish(f"{title} {summary}"):
+            title = self._spanish_news_text(title)
+            summary = self._spanish_news_text(summary)
+            if not title or not summary:
                 continue
                 
             news_items.append(
@@ -421,12 +540,45 @@ class TavilyNewsService(NewsService):
         lowered = normalize_text(text)
         if not lowered:
             return False
-        markers = (
-            " de ", " la ", " en ", " y ", " para ", " con ", " que ", " del ", " los ", " las ",
-            " bogota", " medellin", " colombia", " movilidad", " seguridad", " barrio",
+        language_markers = (
+            " de ", " la ", " el ", " en ", " y ", " para ", " con ", " que ", " del ", " los ", " las ",
+            " una ", " un ", " por ", " sobre ", " desde ", " hasta ", " durante ",
         )
-        count = sum(1 for marker in markers if marker in f" {lowered} ")
-        return count >= 2
+        english_markers = (
+            " the ", " and ", " with ", " for ", " from ", " this ", " that ", " neighborhood ",
+            " traffic ", " safety ", " crime ", " weather ", " flooding ", " nightlife ",
+        )
+        padded = f" {lowered} "
+        has_spanish = any(marker in padded for marker in language_markers)
+        has_english = any(marker in padded for marker in english_markers)
+        return has_spanish and not has_english
+
+    def _spanish_news_text(self, text: str) -> str | None:
+        if self._is_likely_spanish(text):
+            return text
+        translated = text
+        replacements = {
+            "public transport": "transporte publico",
+            "traffic": "trafico",
+            "safety": "seguridad",
+            "crime": "crimen",
+            "police": "policia",
+            "nightlife": "vida nocturna",
+            "bars": "bares",
+            "restaurants": "restaurantes",
+            "flooding": "inundaciones",
+            "weather": "clima",
+            "environmental risks": "riesgos ambientales",
+            "neighborhood": "barrio",
+            "city": "ciudad",
+            "recent news": "noticias recientes",
+            "new": "nuevo",
+            "open": "abren",
+            "opens": "abre",
+        }
+        for source, target in replacements.items():
+            translated = translated.replace(source, target).replace(source.title(), target.capitalize())
+        return translated if self._is_likely_spanish(translated) else None
 
     def _fallback(self, request: Requirement, listings: list[Property]) -> list[NewsItem]:
         if self.fallback is None:

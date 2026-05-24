@@ -1,5 +1,5 @@
 from niddo.config import Settings
-from niddo.graph import build_graph
+from niddo.graph import build_graph, render_html
 from niddo.models import (
     EvalResult,
     Requirement,
@@ -154,3 +154,33 @@ def test_graph_no_results_feedback_mentions_constraint_relaxation():
 
     feedback = state["feedback"].lower()
     assert "no properties matched" in feedback
+
+
+def test_render_html_translates_evaluation_to_spanish():
+    html = render_html(
+        proposal=Proposal(properties=[], score=0.0),
+        requirement=Requirement(
+            location="Chapinero, Bogota",
+            price=3000000,
+            area=70.0,
+            bedrooms=2,
+            parking_spaces=1,
+            admin_fee=200000,
+            bathrooms=1,
+            property_type="apartment",
+        ),
+        news=[],
+        evaluation=EvalResult(
+            score=0.3,
+            threshold=0.72,
+            passed=False,
+            reasons=["The price is over budget"],
+            required_fixes=["Raise budget"],
+        ),
+        language="es",
+    )
+
+    assert "Evaluación de la recomendación" in html
+    assert "El presupuesto o precio debe ajustarse" in html
+    assert "Subir presupuesto" in html
+    assert "The price is over budget" not in html

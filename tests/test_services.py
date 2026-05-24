@@ -1,6 +1,16 @@
 from types import SimpleNamespace
 
-from niddo.models import Listing, ListingLocation, ListingProperty, Location, PropertyType, UserRequest
+from niddo.models import (
+    Listing,
+    ListingLocation,
+    ListingProperty,
+    Location,
+    NewsItem,
+    Property,
+    PropertyType,
+    Requirement,
+    UserRequest,
+)
 from niddo.services import TavilyNewsService, normalize_text
 
 
@@ -28,8 +38,74 @@ def test_tavily_neighborhood_helpers_use_request_and_listings():
     service = TavilyNewsService(settings=SimpleNamespace(tavily_api_key=None, news_results_limit=5))
 
     neighborhoods = service._candidate_neighborhoods(request, listings)
-    query = service._build_query(request, neighborhoods)
+    queries = service._build_queries(service._candidate_news_scopes(request, listings))
 
     assert "Laureles" in neighborhoods
-    assert "Bogota" in query
-    assert "neighborhood news" in query
+    assert any("ciudad de Bogota" in query for query in queries)
+    assert any("barrio o zona Laureles, Medellin" in query for query in queries)
+    assert all("en español" in query for query in queries)
+
+
+def test_tavily_build_insights_keeps_spanish_news_only():
+    service = TavilyNewsService(settings=SimpleNamespace(tavily_api_key=None, news_results_limit=5))
+    response = {
+        "results": [
+            {
+                "title": "Seguridad en Chapinero mejora con mas policia",
+                "content": "La ciudad refuerza seguridad y movilidad en el barrio durante la noche.",
+                "source": "Local",
+            },
+            {
+                "title": "New restaurants open in Bogota",
+                "content": "The neighborhood has more nightlife and traffic this month.",
+                "source": "Wire",
+            },
+        ]
+    }
+
+    items = service._build_insights(response)
+
+    assert items == [
+        NewsItem(
+            source="Local",
+            text="Seguridad en Chapinero mejora con mas policia",
+            summary="La ciudad refuerza seguridad y movilidad en el barrio durante la noche.",
+        )
+    ]
+
+
+def test_news_search_uses_duckduckgo_without_tavily_key(monkeypatch):
+    service = TavilyNewsService(settings=SimpleNamespace(tavily_api_key=None, news_results_limit=1))
+    duck_item = NewsItem(
+        source="Duck",
+        text="Movilidad mejora en Chapinero",
+        summary="La ciudad anuncia cambios de transporte en la zona.",
+    )
+    monkeypatch.setattr(service, "_fetch_duckduckgo_query", lambda query: [duck_item])
+    request = Requirement(
+        location="Chapinero, Bogota",
+        price=3000000,
+        area=60,
+        bedrooms=2,
+        parking_spaces=0,
+        admin_fee=0,
+        bathrooms=1,
+        property_type="apartment",
+    )
+    listings = [
+        Property(
+            location="Bogota, Chapinero",
+            price=2800000,
+            area=62,
+            bedrooms=2,
+            parking_spaces=0,
+            admin_fee=0,
+            bathrooms=1,
+            property_type="apartment",
+            score=0.9,
+        )
+    ]
+
+    items = service.search(request, listings)
+
+    assert items == [duck_item]

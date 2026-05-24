@@ -302,18 +302,63 @@ def _tradeoffs(prop: Property, requirement: Requirement | None, is_spanish: bool
 
 
 def _to_spanish_line(line: str) -> str:
-    replacements = [
-        ("Budget fit", "Ajuste al presupuesto"),
-        ("No viable listings were found after the configured retries.", "No se encontraron opciones viables después de los reintentos configurados."),
-        ("No results", "Sin resultados"),
-        ("Need more options", "Se necesitan más opciones"),
-        ("Raise budget", "Subir presupuesto"),
-    ]
     normalized = line.strip()
-    for source, target in replacements:
+    lowered = normalized.lower()
+    replacements = {
+        "Budget fit": "Ajuste al presupuesto",
+        "No viable listings were found after the configured retries.": "No se encontraron opciones viables después de los reintentos configurados.",
+        "No results": "Sin resultados",
+        "Need more options": "Se necesitan más opciones",
+        "Raise budget": "Subir presupuesto",
+    }
+    for source, target in replacements.items():
         if normalized == source:
             return target
-    return normalized
+
+    phrase_replacements = {
+        "budget": "presupuesto",
+        "price": "precio",
+        "within budget": "dentro del presupuesto",
+        "over budget": "por encima del presupuesto",
+        "location": "ubicación",
+        "area": "zona",
+        "bedrooms": "habitaciones",
+        "bathrooms": "baños",
+        "parking": "parqueadero",
+        "listing": "inmueble",
+        "listings": "inmuebles",
+        "property": "propiedad",
+        "properties": "propiedades",
+        "matches": "coincide con",
+        "does not match": "no coincide con",
+        "doesn't match": "no coincide con",
+        "fits": "encaja",
+        "does not fit": "no encaja",
+        "too restrictive": "demasiado restrictiva",
+        "increase": "aumentar",
+        "reduce": "reducir",
+        "relax": "flexibilizar",
+        "requested": "solicitado",
+        "request": "solicitud",
+        "more options": "más opciones",
+        "no viable": "sin opciones viables",
+        "found": "encontradas",
+        "after retries": "después de los reintentos",
+    }
+    translated = normalized
+    for source, target in phrase_replacements.items():
+        translated = translated.replace(source, target).replace(source.title(), target.capitalize())
+
+    english_markers = (" the ", " is ", " are ", " with ", " for ", " needs ", " should ", " not ")
+    if any(marker in f" {translated.lower()} " for marker in english_markers):
+        if "budget" in lowered or "price" in lowered:
+            return "El presupuesto o precio debe ajustarse para mejorar la recomendación."
+        if "location" in lowered or "area" in lowered or "neighborhood" in lowered:
+            return "La ubicación o zona solicitada debe revisarse frente a las opciones disponibles."
+        if "bedroom" in lowered or "bathroom" in lowered or "parking" in lowered:
+            return "Las características del inmueble no coinciden completamente con lo solicitado."
+        return "Hay un criterio pendiente por ajustar para mejorar la recomendación."
+    return translated
 
 
 def render_html(
@@ -328,7 +373,10 @@ def render_html(
     top_properties = sorted(proposal.properties, key=lambda item: item.score, reverse=True)
 
     if not proposal.properties and evaluation and not evaluation.passed:
-        fixes = "".join(f"<li>{fix}</li>" for fix in evaluation.required_fixes)
+        fixes = "".join(
+            f"<li>{_to_spanish_line(fix) if is_spanish else fix}</li>"
+            for fix in evaluation.required_fixes
+        )
         cards.append(
             (
                 "<article class='card'><h3>No se encontraron propiedades</h3>"
